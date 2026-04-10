@@ -107,7 +107,7 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 - Two loopbacks via `module-loopback`
 - Headless-friendly WirePlumber config (`seat-monitoring = disabled`)
 - Systemd user service for always-on usage
-- Optional ADB call helpers
+- Optional ADB call helpers and auto-answer support
 
 ---
 
@@ -119,7 +119,7 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 | `callscoot devices` | Lists paired Bluetooth devices |
 | `callscoot trust MAC` | Marks a paired device as trusted in BlueZ |
 | `callscoot connect MAC` | Tries to connect the paired Bluetooth device |
-| `callscoot configure ...` | Saves the target device / local audio / latency preferences |
+| `callscoot configure ...` | Saves the target device / local audio / latency / ADB preferences |
 | `callscoot up` | Builds the audio bridge immediately if a phone HFP/HSP route exists |
 | `callscoot down` | Removes the bridge modules |
 | `callscoot daemon` | Runs the background watcher that auto-builds the bridge |
@@ -261,6 +261,8 @@ callscoot configure --latency 40
 callscoot configure --sink alsa_output.pci-0000_00_1f.3.analog-stereo
 callscoot configure --source alsa_input.pci-0000_00_1f.3.analog-stereo
 callscoot configure --adb-serial 192.168.1.50:5555
+callscoot configure --auto-answer on
+callscoot configure --auto-answer-delay 2
 ```
 
 Clear pinned values:
@@ -280,6 +282,13 @@ If your Android device is already reachable with ADB:
 callscoot dial +905551112233
 callscoot answer
 callscoot hangup
+callscoot configure --auto-answer on
+```
+
+You can also delay auto-answer slightly so Bluetooth audio has time to settle:
+
+```bash
+callscoot configure --auto-answer-delay 2
 ```
 
 These are convenience helpers only.
@@ -302,6 +311,7 @@ It prints:
 - BlueZ cards and active profiles
 - paired/connected Bluetooth devices
 - ADB devices
+- current ADB call state
 - systemd user service status
 
 Useful logs:

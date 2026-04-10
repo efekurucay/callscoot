@@ -29,6 +29,8 @@ DEFAULTS: dict[str, Any] = {
     "latency_msec": 60,
     "adb_serial": None,
     "discoverable_timeout": 180,
+    "auto_answer": False,
+    "auto_answer_delay_sec": 2,
 }
 LAST_FORCE_HFP: dict[str, float] = {}
 STOP = False
@@ -655,6 +657,35 @@ def adb_cmd(extra: list[str], cli_serial: str | None, cfg: dict[str, Any]) -> No
     run(cmd)
 
 
+def adb_capture(extra: list[str], cli_serial: str | None, cfg: dict[str, Any]) -> str:
+    require_binary("adb")
+    serial = adb_serial(cli_serial, cfg)
+    cmd = ["adb"]
+    if serial:
+        cmd += ["-s", serial]
+    cmd += extra
+    return run(cmd).stdout
+
+
+def android_call_state(cli_serial: str | None, cfg: dict[str, Any]) -> str | None:
+    output = adb_capture(["shell", "dumpsys", "telephony.registry"], cli_serial, cfg)
+    states = [int(match.group(1)) for match in re.finditer(r"\bmCallState=(\d+)", output)]
+    if not states:
+        return None
+    if any(state == 1 for state in states):
+        return "ringing"
+    if any(state == 2 for state in states):
+        return "offhook"
+    return "idle"
+
+
+def bluetooth_connected(target_mac: str | None) -> bool:
+    connected = parse_bt_devices(bluetoothctl("devices Connected", check=False))
+    if target_mac:
+        return any(device["mac"] == target_mac for device in connected)
+    return bool(connected)
+
+
 def configure_cmd(args: argparse.Namespace) -> None:
     cfg = load_config()
     changed = False
@@ -682,6 +713,12 @@ def configure_cmd(args: argparse.Namespace) -> None:
     if args.clear_adb_serial:
         cfg["adb_serial"] = None
         changed = True
+    if args.auto_answer is not None:
+        cfg["auto_answer"] = args.auto_answer == "on"
+        changed = True
+    if args.auto_answer_delay is not None:
+        cfg["auto_answer_delay_sec"] = max(0, int(args.auto_answer_delay))
+        changed = True
     if not changed:
         print(json.dumps(cfg, indent=2))
         return
@@ -704,6 +741,7 @@ def print_status() -> None:
         "bt_connected": parse_bt_devices(safe_text(lambda: bluetoothctl("devices Connected", check=False))),
         "bt_paired": parse_bt_devices(safe_text(lambda: bluetoothctl("devices Paired", check=False))),
         "adb_devices": adb_devices_safe(),
+        "adb_call_state": safe_value(lambda: android_call_state(None, cfg) or "unknown") if cfg.get("adb_serial") else None,
         "callscoot_modules": [m for m in list_modules_short_safe() if "callscoot" in m.get("args", "")],
         "service_active": safe_text(lambda: run(["systemctl", "--user", "is-active", SERVICE_NAME], check=False).stdout).strip(),
     }
@@ -914,13 +952,10 @@ def bridge_down(_: argparse.Namespace) -> None:
 
 def daemon_cmd(args: argparse.Namespace) -> None:
     global STOP
-    cfg = load_config()
-    target_mac = normalize_mac(args.device or cfg.get("target_device"))
-    echo_cancel = cfg.get("echo_cancel", True) if args.echo_cancel is None else args.echo_cancel == "on"
-    latency_msec = int(args.latency or cfg.get("latency_msec") or 60)
-    local_source_override = args.source or cfg.get("local_source")
-    local_sink_override = args.sink or cfg.get("local_sink")
     controller = BridgeController()
+    last_call_state: str | None = None
+    ring_started_at: float | None = None
+    answered_current_ring = False
 
     def handle_signal(signum, _frame):
         global STOP
@@ -933,6 +968,33 @@ def daemon_cmd(args: argparse.Namespace) -> None:
     log("daemon started")
     while not STOP:
         try:
+            cfg = load_config()
+            target_mac = normalize_mac(args.device or cfg.get("target_device"))
+            echo_cancel = cfg.get("echo_cancel", True) if args.echo_cancel is None else args.echo_cancel == "on"
+            latency_msec = int(args.latency or cfg.get("latency_msec") or 60)
+            local_source_override = args.source or cfg.get("local_source")
+            local_sink_override = args.sink or cfg.get("local_sink")
+            auto_answer = cfg.get("auto_answer", False) if getattr(args, "auto_answer", None) is None else args.auto_answer == "on"
+            auto_answer_delay = max(0, int(getattr(args, "auto_answer_delay", None) or cfg.get("auto_answer_delay_sec") or 0))
+
+            call_state = None
+            if auto_answer and (cfg.get("adb_serial") or len(adb_devices_safe()) == 1):
+                call_state = android_call_state(None, cfg)
+                if call_state != last_call_state:
+                    if call_state == "ringing":
+                        ring_started_at = time.time()
+                        answered_current_ring = False
+                        log("incoming call detected")
+                    else:
+                        ring_started_at = None
+                        answered_current_ring = False
+                    last_call_state = call_state
+                if call_state == "ringing" and not answered_current_ring and ring_started_at is not None:
+                    if time.time() - ring_started_at >= auto_answer_delay and bluetooth_connected(target_mac):
+                        log("auto-answering incoming call over ADB")
+                        adb_cmd(["shell", "input", "keyevent", "KEYCODE_HEADSETHOOK"], None, cfg)
+                        answered_current_ring = True
+
             cards = list_cards()
             maybe_force_hfp(cards, target_mac)
             pair = choose_pair(target_mac)
@@ -1049,6 +1111,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--latency", type=int)
     p.add_argument("--adb-serial")
     p.add_argument("--clear-adb-serial", action="store_true")
+    p.add_argument("--auto-answer", choices=["on", "off"])
+    p.add_argument("--auto-answer-delay", type=int)
     p.set_defaults(func=configure_cmd)
 
     p = sub.add_parser("up", help="create the current audio bridge now")
@@ -1068,6 +1132,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--source")
     p.add_argument("--echo-cancel", choices=["on", "off"])
     p.add_argument("--latency", type=int)
+    p.add_argument("--auto-answer", choices=["on", "off"])
+    p.add_argument("--auto-answer-delay", type=int)
     p.set_defaults(func=daemon_cmd)
 
     p = sub.add_parser("logs", help="show daemon logs")

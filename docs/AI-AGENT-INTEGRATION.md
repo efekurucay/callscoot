@@ -67,6 +67,7 @@ Useful fields in the JSON output:
 - `default_sink`
 - `default_source`
 - `adb_devices`
+- `adb_call_state`
 
 ### To force the bridge now
 
@@ -88,7 +89,7 @@ callscoot answer
 callscoot hangup
 ```
 
-Note: `dial/answer/hangup` use ADB if available. Call audio still uses Bluetooth HFP/HSP.
+Note: `dial/answer/hangup` use ADB if available. Call audio still uses Bluetooth HFP/HSP. If you want the daemon to answer ringing calls automatically, configure `callscoot configure --auto-answer on`.
 
 ## Minimal agent policy
 
