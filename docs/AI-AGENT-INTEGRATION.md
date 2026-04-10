@@ -95,7 +95,7 @@ Note: `dial/answer/hangup` use ADB if available. Call audio still uses Bluetooth
 A simple policy is enough:
 
 - use `callscoot status` first
-- if no Bluetooth HFP/HSP pair is present, do not pretend the bridge is active
+- if no Bluetooth call-audio route is present in `bluez_pairs`, do not pretend the bridge is active
 - use `callscoot up` only when a phone route exists
 - use `callscoot dial` only when the user explicitly asked to call a number
 - use `callscoot logs` when diagnosis is needed

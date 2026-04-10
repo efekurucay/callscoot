@@ -31,9 +31,9 @@ When `callscoot-daemon.service` is running, it loops continuously and does the f
 
 1. checks PipeWire / PulseAudio-compatible state with `pactl`
 2. looks for BlueZ cards and Bluetooth nodes created by the phone
-3. searches for a matching Bluetooth:
-   - source (`bluez_input...`)
-   - sink (`bluez_output...`)
+3. searches for a matching Bluetooth call route, either as:
+   - source (`bluez_input...`) + sink (`bluez_output...`) devices
+   - or stream-based phone audio endpoints exposed by PipeWire
 4. if available, tries to switch the BlueZ card to an HFP/HSP profile
 5. creates these modules:
    - `module-echo-cancel` (default: enabled)
@@ -128,7 +128,7 @@ CallScoot currently does **not** include:
 A successful setup looks like this:
 
 1. phone is paired and trusted
-2. `callscoot status` shows a Bluetooth HFP/HSP source+sink pair
+2. `callscoot status` shows an active Bluetooth call-audio route in `bluez_pairs`
 3. the daemon creates loopback modules
 4. during a phone call, sound is heard from the laptop speakers
 5. your laptop mic is used for the conversation

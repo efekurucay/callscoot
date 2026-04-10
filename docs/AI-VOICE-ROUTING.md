@@ -82,7 +82,7 @@ Before doing anything below:
 1. CallScoot must already be installed
 2. the phone must be paired with the laptop
 3. Android must allow the laptop Bluetooth device for **call audio**
-4. `callscoot status` should eventually show a Bluetooth HFP/HSP pair when the phone route is active
+4. `callscoot status` should eventually show an active Bluetooth call-audio route in `bluez_pairs` when the phone route is active
 
 ---
 
@@ -173,7 +173,7 @@ callscoot status
 What you want to see:
 
 - `service_active` = `active`
-- `bluez_pairs` contains the phone HFP/HSP source+sink pair
+- `bluez_pairs` contains the phone's active Bluetooth call-audio route
 - your config contains:
   - `local_sink = callscoot.agent.rx`
   - `local_source = callscoot.agent.tx.monitor`

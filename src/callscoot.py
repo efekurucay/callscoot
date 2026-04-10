@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import pty
 from pathlib import Path
 from typing import Any
 
@@ -118,6 +119,14 @@ def list_sources() -> list[dict[str, Any]]:
 
 def list_cards() -> list[dict[str, Any]]:
     return pactl_json("cards")
+
+
+def list_sink_inputs() -> list[dict[str, Any]]:
+    return pactl_json("sink-inputs")
+
+
+def list_source_outputs() -> list[dict[str, Any]]:
+    return pactl_json("source-outputs")
 
 
 def list_modules_short() -> list[dict[str, Any]]:
@@ -267,6 +276,7 @@ def bluez_pairs() -> list[dict[str, Any]]:
         if sink and source:
             pairs.append(
                 {
+                    "mode": "device",
                     "mac": mac,
                     "sink": sink,
                     "source": source,
@@ -279,8 +289,65 @@ def bluez_pairs() -> list[dict[str, Any]]:
     return pairs
 
 
-def choose_pair(target_mac: str | None) -> dict[str, Any] | None:
+def bluez_stream_pairs() -> list[dict[str, Any]]:
+    sink_inputs = []
+    for item in list_sink_inputs():
+        props = item.get("properties") or {}
+        name = str(props.get("node.name", ""))
+        if name.startswith("bluez_input."):
+            sink_inputs.append(item)
+    source_outputs = []
+    for item in list_source_outputs():
+        props = item.get("properties") or {}
+        name = str(props.get("node.name", ""))
+        if name.startswith("bluez_output."):
+            source_outputs.append(item)
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for item in sink_inputs:
+        props = item.get("properties") or {}
+        name = props.get("node.name")
+        mac = extract_mac_from_name(name) or normalize_mac(props.get("api.bluez5.address"))
+        if mac:
+            grouped.setdefault(mac, {"mac": mac})["sink_input"] = item
+    for item in source_outputs:
+        props = item.get("properties") or {}
+        name = props.get("node.name")
+        mac = extract_mac_from_name(name) or normalize_mac(props.get("api.bluez5.address"))
+        if mac:
+            grouped.setdefault(mac, {"mac": mac})["source_output"] = item
+
+    pairs = []
+    for mac, item in grouped.items():
+        sink_input = item.get("sink_input")
+        source_output = item.get("source_output")
+        if sink_input and source_output:
+            sink_props = sink_input.get("properties") or {}
+            source_props = source_output.get("properties") or {}
+            pairs.append(
+                {
+                    "mode": "stream",
+                    "mac": mac,
+                    "sink_input": sink_input,
+                    "source_output": source_output,
+                    "sink_input_index": sink_input.get("index"),
+                    "source_output_index": source_output.get("index"),
+                    "source_name": sink_props.get("node.name"),
+                    "sink_name": source_props.get("node.name"),
+                    "description": sink_props.get("device.description") or source_props.get("device.description") or mac,
+                }
+            )
+    pairs.sort(key=lambda item: str(item.get("description", "")))
+    return pairs
+
+
+def available_bluez_pairs() -> list[dict[str, Any]]:
     pairs = bluez_pairs()
+    return pairs if pairs else bluez_stream_pairs()
+
+
+def choose_pair(target_mac: str | None) -> dict[str, Any] | None:
+    pairs = available_bluez_pairs()
     if target_mac:
         for pair in pairs:
             if pair["mac"] == target_mac:
@@ -310,12 +377,71 @@ def pulse_module_unload(module_id: int | None) -> None:
         pass
 
 
+def move_sink_input(index: int | None, sink: str | None) -> None:
+    if index is None or not sink:
+        return
+    run(["pactl", "move-sink-input", str(index), sink])
+
+
+def move_source_output(index: int | None, source: str | None) -> None:
+    if index is None or not source:
+        return
+    run(["pactl", "move-source-output", str(index), source])
+
+
+def find_named_sink(name: str) -> dict[str, Any] | None:
+    for sink in list_sinks():
+        if sink.get("name") == name:
+            return sink
+    return None
+
+
+def find_named_source(name: str) -> dict[str, Any] | None:
+    for source in list_sources():
+        if source.get("name") == name:
+            return source
+    return None
+
+
+def find_sink_input(index: int) -> dict[str, Any] | None:
+    for item in list_sink_inputs():
+        if int(item.get("index", -1)) == int(index):
+            return item
+    return None
+
+
+def find_source_output(index: int) -> dict[str, Any] | None:
+    for item in list_source_outputs():
+        if int(item.get("index", -1)) == int(index):
+            return item
+    return None
+
+
 class BridgeController:
     def __init__(self) -> None:
         self.state = load_state()
 
     def cleanup(self) -> None:
         state = load_state()
+        if state.get("mode") == "stream":
+            default_sink = None
+            default_source = None
+            try:
+                default_sink = get_default_sink()
+            except Exception:
+                pass
+            try:
+                default_source = get_default_source()
+            except Exception:
+                pass
+            try:
+                move_sink_input(state.get("sink_input_id"), default_sink)
+            except Exception:
+                pass
+            try:
+                move_source_output(state.get("source_output_id"), default_source)
+            except Exception:
+                pass
         pulse_module_unload(state.get("loopback_rx_id"))
         pulse_module_unload(state.get("loopback_tx_id"))
         pulse_module_unload(state.get("echo_module_id"))
@@ -398,9 +524,86 @@ class BridgeController:
         )
         save_state(
             {
+                "mode": "device",
                 "echo_module_id": echo_id,
                 "loopback_rx_id": rx_id,
                 "loopback_tx_id": tx_id,
+                "signature": desired,
+                "created_at": int(time.time()),
+            }
+        )
+
+    def ensure_stream_targets(self, sink_input_id: int, source_output_id: int, rx_sink: str, tx_source: str) -> bool:
+        sink = find_named_sink(rx_sink)
+        source = find_named_source(tx_source)
+        sink_input = find_sink_input(sink_input_id)
+        source_output = find_source_output(source_output_id)
+        if not sink or not source or not sink_input or not source_output:
+            return False
+        return int(sink_input.get("sink", -1)) == int(sink.get("index", -2)) and int(source_output.get("source", -1)) == int(source.get("index", -2))
+
+    def ensure_streams(
+        self,
+        sink_input_id: int,
+        source_output_id: int,
+        phone_source: str,
+        phone_sink: str,
+        local_source: str,
+        local_sink: str,
+        echo_cancel: bool,
+        target_mac: str | None,
+        latency_msec: int,
+    ) -> None:
+        desired = {
+            "mode": "stream",
+            "sink_input_id": sink_input_id,
+            "source_output_id": source_output_id,
+            "phone_source": phone_source,
+            "phone_sink": phone_sink,
+            "local_source": local_source,
+            "local_sink": local_sink,
+            "echo_cancel": echo_cancel,
+            "target_mac": target_mac,
+            "latency_msec": latency_msec,
+        }
+        current = load_state().get("signature")
+        desired_rx_sink = ECHO_SINK_NAME if echo_cancel else local_sink
+        desired_tx_source = ECHO_SOURCE_NAME if echo_cancel else local_source
+        if current == desired and self.ensure_stream_targets(sink_input_id, source_output_id, desired_rx_sink, desired_tx_source):
+            return
+        self.cleanup()
+        echo_id = None
+        tx_source = local_source
+        rx_sink = local_sink
+        if echo_cancel:
+            log(f"loading echo canceller: {local_source} -> {local_sink}")
+            echo_id = pulse_module_load(
+                "module-echo-cancel",
+                source_name=ECHO_SOURCE_NAME,
+                sink_name=ECHO_SINK_NAME,
+                source_master=local_source,
+                sink_master=local_sink,
+                aec_method="webrtc",
+            )
+            if not wait_for_source(ECHO_SOURCE_NAME) or not wait_for_sink(ECHO_SINK_NAME):
+                pulse_module_unload(echo_id)
+                raise CommandError("echo-cancel nodes did not appear in time")
+            tx_source = ECHO_SOURCE_NAME
+            rx_sink = ECHO_SINK_NAME
+        try:
+            log(f"moving phone RX stream {sink_input_id} -> {rx_sink}")
+            move_sink_input(sink_input_id, rx_sink)
+            log(f"moving phone TX stream {source_output_id} -> {tx_source}")
+            move_source_output(source_output_id, tx_source)
+        except Exception:
+            pulse_module_unload(echo_id)
+            raise
+        save_state(
+            {
+                "mode": "stream",
+                "echo_module_id": echo_id,
+                "sink_input_id": sink_input_id,
+                "source_output_id": source_output_id,
                 "signature": desired,
                 "created_at": int(time.time()),
             }
@@ -524,7 +727,20 @@ def safe_text(fn) -> str:
 
 def bluez_pairs_safe() -> list[dict[str, Any]]:
     try:
-        return [{"mac": p["mac"], "source": p["source_name"], "sink": p["sink_name"], "description": p["description"]} for p in bluez_pairs()]
+        rows = []
+        for p in available_bluez_pairs():
+            row = {
+                "mode": p.get("mode"),
+                "mac": p["mac"],
+                "source": p.get("source_name"),
+                "sink": p.get("sink_name"),
+                "description": p.get("description"),
+            }
+            if p.get("mode") == "stream":
+                row["sink_input_index"] = p.get("sink_input_index")
+                row["source_output_index"] = p.get("source_output_index")
+            rows.append(row)
+        return rows
     except Exception as exc:  # noqa: BLE001
         return [{"error": str(exc)}]
 
@@ -566,28 +782,52 @@ def list_modules_short_safe() -> list[dict[str, Any]]:
 def pair_mode(args: argparse.Namespace) -> None:
     timeout = int(args.timeout)
     before = {item["mac"] for item in parse_bt_devices(bluetoothctl("devices Paired", check=False))}
-    bluetoothctl(
-        "power on",
-        "agent on",
-        "default-agent",
-        f"discoverable-timeout {timeout}",
-        "pairable on",
-        "discoverable on",
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        ["bluetoothctl", "--agent=KeyboardDisplay"],
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        text=False,
+        close_fds=True,
     )
-    log(f"pairing window open for {timeout}s")
-    print("Open Bluetooth settings on the phone and pair with this laptop now.")
-    deadline = time.time() + timeout
-    seen = set(before)
+    os.close(slave_fd)
     try:
+        for command in [
+            "power on\n",
+            "pairable on\n",
+            f"discoverable-timeout {timeout}\n",
+            "discoverable on\n",
+        ]:
+            os.write(master_fd, command.encode())
+            time.sleep(0.3)
+
+        log(f"pairing window open for {timeout}s")
+        print("Open Bluetooth settings on the phone and pair with this laptop now.")
+        deadline = time.time() + timeout
+        seen = set(before)
         while time.time() < deadline:
             devices = parse_bt_devices(bluetoothctl("devices Paired", check=False))
             for device in devices:
                 if device["mac"] not in seen:
                     seen.add(device["mac"])
                     print(f"paired: {device['mac']}  {device['name']}")
+            if proc.poll() is not None:
+                break
             time.sleep(2)
     finally:
         bluetoothctl("discoverable off", "pairable off", check=False)
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=3)
     after = parse_bt_devices(bluetoothctl("devices Paired", check=False))
     print(json.dumps(after, indent=2))
 
@@ -625,20 +865,33 @@ def bridge_up(args: argparse.Namespace) -> None:
     maybe_force_hfp(cards, target_mac)
     pair = choose_pair(target_mac)
     if not pair:
-        raise CommandError("no active Bluetooth HFP/HSP sink+source pair found")
+        raise CommandError("no active Bluetooth call-audio route found")
     local_source, local_sink = resolve_local_endpoints(cfg, args)
     echo_cancel = cfg.get("echo_cancel", True) if args.echo_cancel is None else args.echo_cancel == "on"
     latency_msec = int(args.latency or cfg.get("latency_msec") or 60)
     controller = BridgeController()
-    controller.ensure(
-        phone_source=pair["source_name"],
-        phone_sink=pair["sink_name"],
-        local_source=local_source,
-        local_sink=local_sink,
-        echo_cancel=echo_cancel,
-        target_mac=pair["mac"],
-        latency_msec=latency_msec,
-    )
+    if pair.get("mode") == "stream":
+        controller.ensure_streams(
+            sink_input_id=int(pair["sink_input_index"]),
+            source_output_id=int(pair["source_output_index"]),
+            phone_source=pair["source_name"],
+            phone_sink=pair["sink_name"],
+            local_source=local_source,
+            local_sink=local_sink,
+            echo_cancel=echo_cancel,
+            target_mac=pair["mac"],
+            latency_msec=latency_msec,
+        )
+    else:
+        controller.ensure(
+            phone_source=pair["source_name"],
+            phone_sink=pair["sink_name"],
+            local_source=local_source,
+            local_sink=local_sink,
+            echo_cancel=echo_cancel,
+            target_mac=pair["mac"],
+            latency_msec=latency_msec,
+        )
     print(
         json.dumps(
             {
@@ -689,15 +942,28 @@ def daemon_cmd(args: argparse.Namespace) -> None:
                 continue
             local_source = local_source_override or get_default_source()
             local_sink = local_sink_override or get_default_sink()
-            controller.ensure(
-                phone_source=pair["source_name"],
-                phone_sink=pair["sink_name"],
-                local_source=local_source,
-                local_sink=local_sink,
-                echo_cancel=echo_cancel,
-                target_mac=pair["mac"],
-                latency_msec=latency_msec,
-            )
+            if pair.get("mode") == "stream":
+                controller.ensure_streams(
+                    sink_input_id=int(pair["sink_input_index"]),
+                    source_output_id=int(pair["source_output_index"]),
+                    phone_source=pair["source_name"],
+                    phone_sink=pair["sink_name"],
+                    local_source=local_source,
+                    local_sink=local_sink,
+                    echo_cancel=echo_cancel,
+                    target_mac=pair["mac"],
+                    latency_msec=latency_msec,
+                )
+            else:
+                controller.ensure(
+                    phone_source=pair["source_name"],
+                    phone_sink=pair["sink_name"],
+                    local_source=local_source,
+                    local_sink=local_sink,
+                    echo_cancel=echo_cancel,
+                    target_mac=pair["mac"],
+                    latency_msec=latency_msec,
+                )
         except Exception as exc:  # noqa: BLE001
             log(f"daemon error: {exc}")
             time.sleep(2)

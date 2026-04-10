@@ -101,7 +101,7 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 
 ## Features
 
-- Auto-detects Bluetooth HFP/HSP sink+source pairs
+- Auto-detects Bluetooth HFP/HSP device pairs and stream-based call routes
 - Auto-switches BlueZ cards to an HFP profile when possible
 - Echo cancellation via `module-echo-cancel`
 - Two loopbacks via `module-loopback`
@@ -298,7 +298,7 @@ It prints:
 - current config
 - active bridge module IDs
 - default sink/source
-- BlueZ sink+source pairs
+- detected Bluetooth call-audio routes (`bluez_pairs`)
 - BlueZ cards and active profiles
 - paired/connected Bluetooth devices
 - ADB devices
