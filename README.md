@@ -18,6 +18,53 @@ This project is Linux-first and tested against:
 - WirePlumber 0.5.x
 - Android phone over Bluetooth HFP/HSP
 
+See also:
+
+- [`docs/WHAT-THIS-REPO-DOES-TODAY.md`](docs/WHAT-THIS-REPO-DOES-TODAY.md)
+
+---
+
+## What this repo does right now
+
+As shipped today, CallScoot is a **Linux-side Bluetooth call audio bridge**.
+
+It is useful when all of these are true:
+
+- your Android phone is paired to the laptop over Bluetooth
+- Android is allowed to use the laptop for **call audio**
+- Linux exposes the phone as an HFP/HSP Bluetooth audio device
+- you want the **laptop microphone + laptop speakers** to be the active call endpoint
+
+When those conditions are met, CallScoot does this automatically:
+
+1. watches PipeWire / BlueZ for a live Bluetooth **HFP/HSP source + sink** pair
+2. switches the Bluetooth card to a headset / hands-free profile when possible
+3. creates an audio graph so that:
+   - phone call audio plays on the laptop speakers
+   - laptop mic audio goes back to the phone
+4. optionally inserts echo cancellation in the middle
+5. removes the bridge again when the Bluetooth call route disappears
+
+In short:
+
+> This repo turns a Linux laptop into a local Bluetooth speakerphone / headset bridge for Android calls.
+
+---
+
+## What this repo does not try to do
+
+This repository intentionally does **not** do these things yet:
+
+- no Android companion app
+- no contact sync
+- no voice command parser like "call Ahmet"
+- no custom Bluetooth telephony stack
+- no raw phone-call audio capture over ADB
+- no GUI
+
+Optional ADB commands are included only as convenience helpers for dialing / answering / hanging up.
+The actual call audio path is still Bluetooth HFP/HSP.
+
 ---
 
 ## Why this exists
@@ -59,6 +106,26 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 - Headless-friendly WirePlumber config (`seat-monitoring = disabled`)
 - Systemd user service for always-on usage
 - Optional ADB call helpers
+
+---
+
+## What each command is for
+
+| Command | What it does |
+|---|---|
+| `callscoot pair` | Opens a temporary Bluetooth pairing window on the laptop |
+| `callscoot devices` | Lists paired Bluetooth devices |
+| `callscoot trust MAC` | Marks a paired device as trusted in BlueZ |
+| `callscoot connect MAC` | Tries to connect the paired Bluetooth device |
+| `callscoot configure ...` | Saves the target device / local audio / latency preferences |
+| `callscoot up` | Builds the audio bridge immediately if a phone HFP/HSP route exists |
+| `callscoot down` | Removes the bridge modules |
+| `callscoot daemon` | Runs the background watcher that auto-builds the bridge |
+| `callscoot status` | Prints config, BlueZ devices, PipeWire route info, service state |
+| `callscoot logs -f` | Follows daemon logs |
+| `callscoot dial NUMBER` | Optional ADB helper to start a call on Android |
+| `callscoot answer` | Optional ADB helper to answer over ADB |
+| `callscoot hangup` | Optional ADB helper to hang up over ADB |
 
 ---
 
