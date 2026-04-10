@@ -18,6 +18,7 @@ import callscoot
 
 APP = "callscoot-agent"
 AGENT_CONFIG_PATH = callscoot.CONFIG_DIR / "agent.json"
+OPENAI_ENV_PATH = callscoot.CONFIG_DIR / "openai.env"
 DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "rx_sink": "callscoot.agent.rx",
@@ -81,6 +82,23 @@ def run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return result
 
 
+def load_simple_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    data: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        data[key.strip()] = value.strip().strip('"').strip("'")
+    return data
+
+
+def openai_api_key(cfg: dict[str, Any]) -> str | None:
+    return cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY") or load_simple_env_file(OPENAI_ENV_PATH).get("OPENAI_API_KEY")
+
+
 def http_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, method="POST")
@@ -134,7 +152,7 @@ class MockTranscriber:
 
 class OpenAITranscriber:
     def transcribe(self, wav_path: Path, cfg: dict[str, Any]) -> str:
-        api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+        api_key = openai_api_key(cfg)
         if not api_key:
             raise AgentError("OPENAI_API_KEY is missing")
         base = str(cfg.get("openai_base_url") or DEFAULTS["openai_base_url"]).rstrip("/")
@@ -197,7 +215,7 @@ class MockLLM:
 
 class OpenAILLM:
     def _chat(self, messages: list[dict[str, str]], cfg: dict[str, Any]) -> str:
-        api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+        api_key = openai_api_key(cfg)
         if not api_key:
             raise AgentError("OPENAI_API_KEY is missing")
         base = str(cfg.get("openai_base_url") or DEFAULTS["openai_base_url"]).rstrip("/")
@@ -261,7 +279,7 @@ class MockTTS:
 
 class OpenAITTS:
     def synthesize(self, text: str, cfg: dict[str, Any]) -> bytes:
-        api_key = cfg.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+        api_key = openai_api_key(cfg)
         if not api_key:
             raise AgentError("OPENAI_API_KEY is missing")
         base = str(cfg.get("openai_base_url") or DEFAULTS["openai_base_url"]).rstrip("/")
@@ -568,6 +586,8 @@ def status_cmd(_: argparse.Namespace) -> None:
                     "tx_monitor_exists": callscoot.source_exists(f"{cfg['tx_sink']}.monitor"),
                 },
                 "current_call": callscoot.load_current_call(),
+                "openai_env_path": str(OPENAI_ENV_PATH),
+                "openai_key_configured": bool(openai_api_key(cfg)),
             },
             indent=2,
         )
