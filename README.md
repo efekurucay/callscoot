@@ -21,6 +21,7 @@ This project is Linux-first and tested against:
 See also:
 
 - [`docs/WHAT-THIS-REPO-DOES-TODAY.md`](docs/WHAT-THIS-REPO-DOES-TODAY.md)
+- [`docs/AI-AGENT-INTEGRATION.md`](docs/AI-AGENT-INTEGRATION.md)
 
 ---
 
