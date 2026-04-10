@@ -9,6 +9,8 @@ CallScoot makes the laptop behave like a local call console:
 - laptop speakers play the remote caller
 - optional **echo cancellation** is enabled by default
 - optional **ADB helpers** can dial / answer / hang up calls
+- optional **call policies** can auto-answer / auto-reject incoming calls
+- optional **AI agent mode** can run STT -> LLM -> TTS inside the call
 - runs as a **headless user service** on an always-on Linux box
 
 This project is Linux-first and tested against:
@@ -21,8 +23,10 @@ This project is Linux-first and tested against:
 See also:
 
 - [`docs/WHAT-THIS-REPO-DOES-TODAY.md`](docs/WHAT-THIS-REPO-DOES-TODAY.md)
+- [`docs/CALL-AUTOMATION.md`](docs/CALL-AUTOMATION.md)
 - [`docs/AI-AGENT-INTEGRATION.md`](docs/AI-AGENT-INTEGRATION.md)
 - [`docs/AI-VOICE-ROUTING.md`](docs/AI-VOICE-ROUTING.md)
+- [`docs/AI-AGENT-RUNBOOK.md`](docs/AI-AGENT-RUNBOOK.md)
 
 ---
 
@@ -107,7 +111,10 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 - Two loopbacks via `module-loopback`
 - Headless-friendly WirePlumber config (`seat-monitoring = disabled`)
 - Systemd user service for always-on usage
-- Optional ADB call helpers and auto-answer support
+- Optional ADB call helpers, active-device auto-selection, and auto-answer support
+- Incoming-call policy engine: allowlist / blocklist / business hours
+- Per-call session logs under `~/.local/state/callscoot/calls/`
+- Optional `callscoot-agent` pipeline with OpenAI / Ollama / whisper-cli / espeak / mock providers
 
 ---
 
@@ -123,11 +130,15 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 | `callscoot up` | Builds the audio bridge immediately if a phone HFP/HSP route exists |
 | `callscoot down` | Removes the bridge modules |
 | `callscoot daemon` | Runs the background watcher that auto-builds the bridge |
-| `callscoot status` | Prints config, BlueZ devices, PipeWire route info, service state |
+| `callscoot status` | Prints config, selected devices, BlueZ devices, PipeWire route info, service state |
 | `callscoot logs -f` | Follows daemon logs |
+| `callscoot calls` | Lists recent call sessions |
+| `callscoot call-show ID` | Shows one call session including transcript if present |
 | `callscoot dial NUMBER` | Optional ADB helper to start a call on Android |
 | `callscoot answer` | Optional ADB helper to answer over ADB |
 | `callscoot hangup` | Optional ADB helper to hang up over ADB |
+| `callscoot-agent bootstrap-audio` | Creates the AI virtual sinks and points CallScoot at them |
+| `callscoot-agent run` | Runs the optional STT -> LLM -> TTS call agent |
 
 ---
 
@@ -136,9 +147,11 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 ```text
 bin/callscoot                 launcher
 src/callscoot.py             main CLI + daemon
+src/callscoot_agent.py       optional AI call agent
 scripts/install-system.sh    root/system package setup
 scripts/install-user.sh      user install + systemd service
 systemd/callscoot-daemon.service
+systemd/callscoot-agent.service
 config/10-callscoot-bluetooth.conf
 ```
 
@@ -161,6 +174,7 @@ This installs:
 - PulseAudio compatibility tools
 - ADB
 - jq
+- espeak-ng
 
 It also enables `bluetooth.service` and `loginctl enable-linger` for the target user.
 
@@ -173,8 +187,11 @@ It also enables `bluetooth.service` and `loginctl enable-linger` for the target 
 This installs:
 
 - `~/.local/bin/callscoot`
+- `~/.local/bin/callscoot-agent`
 - `~/.local/lib/callscoot/callscoot.py`
+- `~/.local/lib/callscoot/callscoot_agent.py`
 - `~/.config/systemd/user/callscoot-daemon.service`
+- `~/.config/systemd/user/callscoot-agent.service`
 - `~/.config/wireplumber/wireplumber.conf.d/10-callscoot-bluetooth.conf`
 
 And it restarts PipeWire/WirePlumber and enables the daemon.
@@ -263,6 +280,9 @@ callscoot configure --source alsa_input.pci-0000_00_1f.3.analog-stereo
 callscoot configure --adb-serial 192.168.1.50:5555
 callscoot configure --auto-answer on
 callscoot configure --auto-answer-delay 2
+callscoot configure --auto-select-device on
+callscoot configure --policy-mode allowlist --allow-caller +905551112233 --unknown-callers deny --auto-reject on
+callscoot configure --business-hours 09:00-18:00 --business-days mon,tue,wed,thu,fri
 ```
 
 Clear pinned values:
@@ -291,8 +311,66 @@ You can also delay auto-answer slightly so Bluetooth audio has time to settle:
 callscoot configure --auto-answer-delay 2
 ```
 
+And you can apply call policies:
+
+```bash
+callscoot configure --policy-mode blocklist --block-caller '*4443322' --auto-reject on
+```
+
 These are convenience helpers only.
 The actual audio path for calls should still be Bluetooth HFP/HSP.
+
+---
+
+## Call automation
+
+For an always-on desk-phone style setup:
+
+```bash
+callscoot configure \
+  --auto-select-device on \
+  --auto-answer on \
+  --auto-answer-delay 2 \
+  --policy-mode allow_all \
+  --log-calls on
+systemctl --user restart callscoot-daemon.service
+```
+
+More advanced examples are in [`docs/CALL-AUTOMATION.md`](docs/CALL-AUTOMATION.md).
+
+---
+
+## Optional AI agent
+
+Create the AI virtual sinks:
+
+```bash
+callscoot-agent bootstrap-audio
+systemctl --user restart callscoot-daemon.service
+```
+
+Configure a provider stack, for example:
+
+```bash
+callscoot-agent configure \
+  --stt-provider mock \
+  --llm-provider mock \
+  --tts-provider mock
+```
+
+Smoke-test the pipeline:
+
+```bash
+callscoot-agent reply "Merhaba"
+```
+
+Run the continuous agent loop:
+
+```bash
+callscoot-agent run
+```
+
+For provider details, see [`docs/AI-AGENT-RUNBOOK.md`](docs/AI-AGENT-RUNBOOK.md).
 
 ---
 
@@ -307,11 +385,14 @@ It prints:
 - current config
 - active bridge module IDs
 - default sink/source
+- selected Bluetooth / ADB devices
+- active call policy snapshot
 - detected Bluetooth call-audio routes (`bluez_pairs`)
 - BlueZ cards and active profiles
 - paired/connected Bluetooth devices
 - ADB devices
-- current ADB call state
+- current ADB call info
+- active call session
 - systemd user service status
 
 Useful logs:

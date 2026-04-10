@@ -88,7 +88,7 @@ Before doing anything below:
 
 ## Step 1 — create the virtual audio devices
 
-Create two virtual sinks:
+Create two virtual sinks manually:
 
 ```bash
 pactl load-module module-null-sink \
@@ -100,6 +100,12 @@ pactl load-module module-null-sink \
   sink_name=callscoot.agent.tx \
   sink_properties=device.description=CallScoot-AI-TX \
   rate=16000 channels=1 channel_map=mono
+```
+
+Or let the bundled helper do it for you:
+
+```bash
+callscoot-agent bootstrap-audio
 ```
 
 This creates:

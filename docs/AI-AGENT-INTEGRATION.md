@@ -12,6 +12,7 @@ Instead, the agent should run `callscoot` commands and read the output.
 For the **actual audio stream** case — receiving live call audio in the computer, running STT/LLM/TTS, and sending generated speech back into the call — see:
 
 - [`AI-VOICE-ROUTING.md`](AI-VOICE-ROUTING.md)
+- [`AI-AGENT-RUNBOOK.md`](AI-AGENT-RUNBOOK.md)
 
 ## Recommended integration shape
 
@@ -112,6 +113,8 @@ callscoot down
 callscoot dial +905551112233
 callscoot answer
 callscoot hangup
+callscoot calls
+callscoot-agent reply "Merhaba"
 ```
 
 ## Recommended architecture

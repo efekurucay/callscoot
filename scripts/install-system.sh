@@ -23,7 +23,8 @@ apt-get install -y \
   libspa-0.2-bluetooth \
   pulseaudio-utils \
   adb \
-  jq
+  jq \
+  espeak-ng
 
 systemctl enable --now bluetooth.service
 loginctl enable-linger "$TARGET_USER"

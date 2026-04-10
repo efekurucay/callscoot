@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 import pty
+import fnmatch
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,10 +19,13 @@ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / 
 STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / APP
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = STATE_DIR / "bridge-state.json"
+CURRENT_CALL_PATH = STATE_DIR / "current-call.json"
+CALLS_DIR = STATE_DIR / "calls"
 WIREPLUMBER_CONFIG_PATH = Path.home() / ".config" / "wireplumber" / "wireplumber.conf.d" / "10-callscoot-bluetooth.conf"
 SERVICE_NAME = "callscoot-daemon.service"
 ECHO_SOURCE_NAME = "callscoot.echo.src"
 ECHO_SINK_NAME = "callscoot.echo.sink"
+WEEKDAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 DEFAULTS: dict[str, Any] = {
     "target_device": None,
     "local_sink": None,
@@ -31,6 +36,16 @@ DEFAULTS: dict[str, Any] = {
     "discoverable_timeout": 180,
     "auto_answer": False,
     "auto_answer_delay_sec": 2,
+    "auto_select_device": True,
+    "device_bindings": {},
+    "call_policy_mode": "allow_all",
+    "allowed_callers": [],
+    "blocked_callers": [],
+    "unknown_callers": "allow",
+    "business_hours": None,
+    "business_days": WEEKDAY_NAMES[:],
+    "auto_reject_blocked": False,
+    "log_calls": True,
 }
 LAST_FORCE_HFP: dict[str, float] = {}
 STOP = False
@@ -43,6 +58,7 @@ def log(message: str) -> None:
 def ensure_dirs() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    CALLS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 class CommandError(RuntimeError):
@@ -103,6 +119,131 @@ def save_state(state: dict[str, Any]) -> None:
 def clear_state() -> None:
     if STATE_PATH.exists():
         STATE_PATH.unlink()
+
+
+def load_current_call() -> dict[str, Any] | None:
+    ensure_dirs()
+    return load_json_file(CURRENT_CALL_PATH, None)
+
+
+def save_current_call(data: dict[str, Any]) -> None:
+    ensure_dirs()
+    save_json_file(CURRENT_CALL_PATH, data)
+
+
+def clear_current_call() -> None:
+    if CURRENT_CALL_PATH.exists():
+        CURRENT_CALL_PATH.unlink()
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def call_session_dir(session_id: str) -> Path:
+    ensure_dirs()
+    return CALLS_DIR / session_id
+
+
+def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+def normalize_phone_number(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if cleaned.startswith("+"):
+        return "+" + re.sub(r"\D", "", cleaned)
+    digits = re.sub(r"\D", "", cleaned)
+    return digits or None
+
+
+def create_call_session(call_info: dict[str, Any], extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    ensure_dirs()
+    session_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    caller = normalize_phone_number(call_info.get("incoming_number")) or "unknown"
+    caller_slug = re.sub(r"[^0-9A-Za-z+]+", "-", caller).strip("-") or "unknown"
+    session_id = f"{session_id}-{caller_slug}"
+    meta = {
+        "id": session_id,
+        "started_at": utc_now_iso(),
+        "ended_at": None,
+        "state": call_info.get("state"),
+        "incoming_number": normalize_phone_number(call_info.get("incoming_number")),
+        "direction": call_info.get("direction"),
+        "adb_serial": call_info.get("adb_serial"),
+        "target_mac": call_info.get("target_mac"),
+        "target_name": call_info.get("target_name"),
+        "policy_action": None,
+        "policy_reason": None,
+        "summary": None,
+    }
+    if extra:
+        meta.update(extra)
+    session_dir = call_session_dir(session_id)
+    save_json_file(session_dir / "meta.json", meta)
+    save_current_call(meta)
+    append_jsonl(session_dir / "events.jsonl", {"ts": utc_now_iso(), "type": "session_started", "call": call_info, "extra": extra or {}})
+    return meta
+
+
+def update_call_session(session_id: str, **changes: Any) -> dict[str, Any]:
+    meta_path = call_session_dir(session_id) / "meta.json"
+    meta = load_json_file(meta_path, {})
+    meta.update(changes)
+    save_json_file(meta_path, meta)
+    current = load_current_call()
+    if current and current.get("id") == session_id:
+        current.update(changes)
+        save_current_call(current)
+    return meta
+
+
+def append_call_event(session_id: str, event_type: str, **payload: Any) -> None:
+    append_jsonl(call_session_dir(session_id) / "events.jsonl", {"ts": utc_now_iso(), "type": event_type, **payload})
+
+
+def append_call_transcript(session_id: str, speaker: str, text: str, **payload: Any) -> None:
+    append_jsonl(call_session_dir(session_id) / "transcript.jsonl", {"ts": utc_now_iso(), "speaker": speaker, "text": text, **payload})
+
+
+def finalize_call_session(session_id: str, **changes: Any) -> dict[str, Any]:
+    meta = update_call_session(session_id, ended_at=utc_now_iso(), state="idle", **changes)
+    append_call_event(session_id, "session_finished", meta=meta)
+    current = load_current_call()
+    if current and current.get("id") == session_id:
+        clear_current_call()
+    return meta
+
+
+def list_call_sessions(limit: int = 20) -> list[dict[str, Any]]:
+    ensure_dirs()
+    sessions = []
+    for meta_path in sorted(CALLS_DIR.glob("*/meta.json"), reverse=True):
+        try:
+            sessions.append(load_json_file(meta_path, {}))
+        except Exception:
+            continue
+    return sessions[:limit]
+
+
+def read_call_session(session_id: str) -> dict[str, Any]:
+    session_dir = call_session_dir(session_id)
+    meta = load_json_file(session_dir / "meta.json", {})
+    events = []
+    transcript = []
+    events_path = session_dir / "events.jsonl"
+    transcript_path = session_dir / "transcript.jsonl"
+    if events_path.exists():
+        events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
+    if transcript_path.exists():
+        transcript = [json.loads(line) for line in transcript_path.read_text().splitlines() if line.strip()]
+    return {"meta": meta, "events": events, "transcript": transcript}
 
 
 def pactl_json(kind: str) -> list[dict[str, Any]]:
@@ -630,26 +771,141 @@ def parse_bt_devices(text: str) -> list[dict[str, str]]:
     return devices
 
 
-def adb_serial(cli_serial: str | None, cfg: dict[str, Any]) -> str | None:
-    if cli_serial:
-        return cli_serial
-    if cfg.get("adb_serial"):
-        return cfg["adb_serial"]
-    require_binary("adb")
-    result = run(["adb", "devices"])  # starts server if needed
-    connected = []
-    for line in result.stdout.splitlines()[1:]:
+def parse_adb_devices(text: str) -> list[dict[str, str]]:
+    devices = []
+    for line in text.splitlines()[1:]:
+        line = line.strip()
+        if not line:
+            continue
         parts = line.split()
-        if len(parts) >= 2 and parts[1] == "device":
-            connected.append(parts[0])
-    if len(connected) == 1:
-        return connected[0]
+        if len(parts) < 2:
+            continue
+        row = {"serial": parts[0], "state": parts[1]}
+        for part in parts[2:]:
+            if ":" in part:
+                key, value = part.split(":", 1)
+                row[key] = value
+        devices.append(row)
+    return devices
+
+
+def adb_devices(cli_serial: str | None = None) -> list[dict[str, str]]:
+    require_binary("adb")
+    cmd = ["adb", "devices", "-l"]
+    if cli_serial:
+        cmd = ["adb", "-s", cli_serial, "devices", "-l"]
+    return parse_adb_devices(run(cmd, check=False).stdout)
+
+
+def connected_adb_devices() -> list[dict[str, str]]:
+    return [device for device in adb_devices() if device.get("state") == "device"]
+
+
+def caller_number_from_text(text: str) -> str | None:
+    patterns = [
+        r"mCallIncomingNumber=([^\s]+)",
+        r"handle:\s*tel:([+0-9][0-9 -]+)",
+        r"address:\s*tel:([+0-9][0-9 -]+)",
+        r"tel:([+0-9][0-9 -]{5,})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            number = normalize_phone_number(match.group(1))
+            if number:
+                return number
     return None
 
 
-def adb_cmd(extra: list[str], cli_serial: str | None, cfg: dict[str, Any]) -> None:
+def load_bindings(cfg: dict[str, Any]) -> dict[str, Any]:
+    bindings = cfg.get("device_bindings") or {}
+    return bindings if isinstance(bindings, dict) else {}
+
+
+def save_binding(cfg: dict[str, Any], adb_serial_value: str, mac: str, bt_name: str | None = None, model: str | None = None) -> bool:
+    bindings = load_bindings(cfg)
+    current = bindings.get(adb_serial_value) or {}
+    desired = {"mac": mac, "bt_name": bt_name, "model": model}
+    if current == desired:
+        return False
+    bindings[adb_serial_value] = desired
+    cfg["device_bindings"] = bindings
+    save_config(cfg)
+    return True
+
+
+def normalize_name_tokens(value: str | None) -> set[str]:
+    if not value:
+        return set()
+    cleaned = re.sub(r"[^0-9a-z]+", " ", value.lower())
+    return {token for token in cleaned.split() if len(token) >= 2}
+
+
+def match_adb_to_pair(adb_device: dict[str, str], pairs: list[dict[str, Any]], cfg: dict[str, Any]) -> str | None:
+    serial = adb_device.get("serial")
+    bindings = load_bindings(cfg)
+    if serial and serial in bindings:
+        bound_mac = normalize_mac((bindings.get(serial) or {}).get("mac"))
+        if bound_mac and any(pair["mac"] == bound_mac for pair in pairs):
+            return bound_mac
+    model_tokens = normalize_name_tokens(adb_device.get("model") or adb_device.get("device") or adb_device.get("product"))
+    if model_tokens:
+        for pair in pairs:
+            name_tokens = normalize_name_tokens(pair.get("description"))
+            if model_tokens and model_tokens <= name_tokens:
+                return pair["mac"]
+        for pair in pairs:
+            name_tokens = normalize_name_tokens(pair.get("description"))
+            if model_tokens & name_tokens:
+                return pair["mac"]
+    return None
+
+
+def resolve_target_mac(cfg: dict[str, Any], cli_target_mac: str | None = None, pairs: list[dict[str, Any]] | None = None) -> str | None:
+    if cli_target_mac:
+        return normalize_mac(cli_target_mac)
+    if cfg.get("target_device"):
+        return normalize_mac(cfg.get("target_device"))
+    if cfg.get("auto_select_device") is False:
+        return None
+    pairs = pairs if pairs is not None else available_bluez_pairs()
+    if len(pairs) == 1:
+        return pairs[0]["mac"]
+    connected_bt = parse_bt_devices(bluetoothctl("devices Connected", check=False))
+    if len(connected_bt) == 1:
+        return normalize_mac(connected_bt[0]["mac"])
+    connected_adb = connected_adb_devices()
+    if len(connected_adb) == 1 and pairs:
+        matched = match_adb_to_pair(connected_adb[0], pairs, cfg)
+        if matched:
+            if save_binding(cfg, connected_adb[0]["serial"], matched, next((p.get("description") for p in pairs if p["mac"] == matched), None), connected_adb[0].get("model")):
+                log(f"learned device binding: {connected_adb[0]['serial']} -> {matched}")
+            return matched
+    return None
+
+
+def adb_serial(cli_serial: str | None, cfg: dict[str, Any], target_mac: str | None = None) -> str | None:
+    if cli_serial:
+        return cli_serial
+    configured = cfg.get("adb_serial")
+    if configured:
+        return configured
+    devices = connected_adb_devices()
+    if not devices:
+        return None
+    if len(devices) == 1:
+        return devices[0]["serial"]
+    bindings = load_bindings(cfg)
+    if target_mac:
+        for serial, binding in bindings.items():
+            if normalize_mac((binding or {}).get("mac")) == normalize_mac(target_mac) and any(device.get("serial") == serial for device in devices):
+                return serial
+    return None
+
+
+def adb_cmd(extra: list[str], cli_serial: str | None, cfg: dict[str, Any], target_mac: str | None = None) -> None:
     require_binary("adb")
-    serial = adb_serial(cli_serial, cfg)
+    serial = adb_serial(cli_serial, cfg, target_mac=target_mac)
     cmd = ["adb"]
     if serial:
         cmd += ["-s", serial]
@@ -657,9 +913,9 @@ def adb_cmd(extra: list[str], cli_serial: str | None, cfg: dict[str, Any]) -> No
     run(cmd)
 
 
-def adb_capture(extra: list[str], cli_serial: str | None, cfg: dict[str, Any]) -> str:
+def adb_capture(extra: list[str], cli_serial: str | None, cfg: dict[str, Any], target_mac: str | None = None) -> str:
     require_binary("adb")
-    serial = adb_serial(cli_serial, cfg)
+    serial = adb_serial(cli_serial, cfg, target_mac=target_mac)
     cmd = ["adb"]
     if serial:
         cmd += ["-s", serial]
@@ -667,16 +923,36 @@ def adb_capture(extra: list[str], cli_serial: str | None, cfg: dict[str, Any]) -
     return run(cmd).stdout
 
 
-def android_call_state(cli_serial: str | None, cfg: dict[str, Any]) -> str | None:
-    output = adb_capture(["shell", "dumpsys", "telephony.registry"], cli_serial, cfg)
-    states = [int(match.group(1)) for match in re.finditer(r"\bmCallState=(\d+)", output)]
-    if not states:
-        return None
-    if any(state == 1 for state in states):
-        return "ringing"
-    if any(state == 2 for state in states):
-        return "offhook"
-    return "idle"
+def android_call_info(cli_serial: str | None, cfg: dict[str, Any], target_mac: str | None = None) -> dict[str, Any]:
+    serial = adb_serial(cli_serial, cfg, target_mac=target_mac)
+    telephony = adb_capture(["shell", "dumpsys", "telephony.registry"], serial, cfg, target_mac=target_mac)
+    telecom = adb_capture(["shell", "dumpsys", "telecom"], serial, cfg, target_mac=target_mac)
+    states = [int(match.group(1)) for match in re.finditer(r"\bmCallState=(\d+)", telephony)]
+    state = None
+    if states:
+        if any(item == 1 for item in states):
+            state = "ringing"
+        elif any(item == 2 for item in states):
+            state = "offhook"
+        else:
+            state = "idle"
+    direction = None
+    if state in {"ringing", "offhook"}:
+        if re.search(r"\bINCOMING\b|MT - incoming", telecom, flags=re.IGNORECASE):
+            direction = "incoming"
+        elif re.search(r"\bOUTGOING\b|MO - outgoing", telecom, flags=re.IGNORECASE):
+            direction = "outgoing"
+    number = caller_number_from_text(telephony) or (caller_number_from_text(telecom) if state in {"ringing", "offhook"} else None)
+    return {
+        "state": state,
+        "incoming_number": number,
+        "direction": direction,
+        "adb_serial": serial,
+    }
+
+
+def android_call_state(cli_serial: str | None, cfg: dict[str, Any], target_mac: str | None = None) -> str | None:
+    return android_call_info(cli_serial, cfg, target_mac=target_mac).get("state")
 
 
 def bluetooth_connected(target_mac: str | None) -> bool:
@@ -684,6 +960,93 @@ def bluetooth_connected(target_mac: str | None) -> bool:
     if target_mac:
         return any(device["mac"] == target_mac for device in connected)
     return bool(connected)
+
+
+def parse_business_days(value: str | list[str] | None) -> list[str]:
+    if value is None:
+        return WEEKDAY_NAMES[:]
+    if isinstance(value, list):
+        items = value
+    else:
+        items = [item.strip().lower() for item in value.split(",") if item.strip()]
+    days = [item for item in items if item in WEEKDAY_NAMES]
+    return days or WEEKDAY_NAMES[:]
+
+
+def within_business_hours(cfg: dict[str, Any], now: datetime | None = None) -> bool:
+    hours = cfg.get("business_hours")
+    if not hours:
+        return True
+    now = now or datetime.now()
+    allowed_days = parse_business_days(cfg.get("business_days"))
+    if WEEKDAY_NAMES[now.weekday()] not in allowed_days:
+        return False
+    match = re.fullmatch(r"(\d{2}):(\d{2})-(\d{2}):(\d{2})", str(hours).strip())
+    if not match:
+        return True
+    start_minutes = int(match.group(1)) * 60 + int(match.group(2))
+    end_minutes = int(match.group(3)) * 60 + int(match.group(4))
+    current_minutes = now.hour * 60 + now.minute
+    if start_minutes <= end_minutes:
+        return start_minutes <= current_minutes <= end_minutes
+    return current_minutes >= start_minutes or current_minutes <= end_minutes
+
+
+def number_matches_patterns(number: str | None, patterns: list[str]) -> bool:
+    normalized = normalize_phone_number(number)
+    if not normalized:
+        return False
+    digits = normalized.lstrip("+")
+    for pattern in patterns:
+        pattern = pattern.strip()
+        if not pattern:
+            continue
+        normalized_pattern = normalize_phone_number(pattern)
+        if normalized_pattern and (normalized == normalized_pattern or digits.endswith(normalized_pattern.lstrip("+"))):
+            return True
+        if fnmatch.fnmatch(normalized, pattern) or fnmatch.fnmatch(digits, pattern.lstrip("+")):
+            return True
+    return False
+
+
+def evaluate_call_policy(cfg: dict[str, Any], call_info: dict[str, Any]) -> dict[str, str]:
+    auto_reject = bool(cfg.get("auto_reject_blocked", False))
+    outside_hours = not within_business_hours(cfg)
+    if outside_hours:
+        return {"action": "reject" if auto_reject else "ignore", "reason": "outside_business_hours"}
+    mode = str(cfg.get("call_policy_mode") or "allow_all")
+    caller = normalize_phone_number(call_info.get("incoming_number"))
+    allowed = cfg.get("allowed_callers") or []
+    blocked = cfg.get("blocked_callers") or []
+    unknown_mode = str(cfg.get("unknown_callers") or "allow")
+
+    if mode == "allowlist":
+        if caller and number_matches_patterns(caller, allowed):
+            return {"action": "answer", "reason": "allowlist_match"}
+        return {"action": "reject" if auto_reject else "ignore", "reason": "allowlist_miss" if caller else "unknown_caller"}
+
+    if mode == "blocklist":
+        if caller and number_matches_patterns(caller, blocked):
+            return {"action": "reject" if auto_reject else "ignore", "reason": "blocklist_match"}
+        if caller is None and unknown_mode == "deny":
+            return {"action": "reject" if auto_reject else "ignore", "reason": "unknown_caller"}
+        return {"action": "answer", "reason": "blocklist_pass"}
+
+    if caller is None and unknown_mode == "deny":
+        return {"action": "reject" if auto_reject else "ignore", "reason": "unknown_caller"}
+    return {"action": "answer", "reason": "allow_all"}
+
+
+def caller_lists_snapshot(cfg: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "call_policy_mode": cfg.get("call_policy_mode"),
+        "allowed_callers": cfg.get("allowed_callers") or [],
+        "blocked_callers": cfg.get("blocked_callers") or [],
+        "unknown_callers": cfg.get("unknown_callers"),
+        "business_hours": cfg.get("business_hours"),
+        "business_days": parse_business_days(cfg.get("business_days")),
+        "auto_reject_blocked": bool(cfg.get("auto_reject_blocked", False)),
+    }
 
 
 def configure_cmd(args: argparse.Namespace) -> None:
@@ -719,6 +1082,59 @@ def configure_cmd(args: argparse.Namespace) -> None:
     if args.auto_answer_delay is not None:
         cfg["auto_answer_delay_sec"] = max(0, int(args.auto_answer_delay))
         changed = True
+    if args.auto_select_device is not None:
+        cfg["auto_select_device"] = args.auto_select_device == "on"
+        changed = True
+    if args.policy_mode is not None:
+        cfg["call_policy_mode"] = args.policy_mode
+        changed = True
+    if args.unknown_callers is not None:
+        cfg["unknown_callers"] = args.unknown_callers
+        changed = True
+    if args.business_hours is not None:
+        cfg["business_hours"] = args.business_hours
+        changed = True
+    if args.clear_business_hours:
+        cfg["business_hours"] = None
+        changed = True
+    if args.business_days is not None:
+        cfg["business_days"] = parse_business_days(args.business_days)
+        changed = True
+    if args.auto_reject is not None:
+        cfg["auto_reject_blocked"] = args.auto_reject == "on"
+        changed = True
+    if args.log_calls is not None:
+        cfg["log_calls"] = args.log_calls == "on"
+        changed = True
+    allowed = list(cfg.get("allowed_callers") or [])
+    blocked = list(cfg.get("blocked_callers") or [])
+    if getattr(args, "allow_caller", None):
+        for item in args.allow_caller:
+            if item not in allowed:
+                allowed.append(item)
+        cfg["allowed_callers"] = allowed
+        changed = True
+    if getattr(args, "remove_allow_caller", None):
+        cfg["allowed_callers"] = [item for item in allowed if item not in set(args.remove_allow_caller)]
+        changed = True
+    if args.clear_allowed_callers:
+        cfg["allowed_callers"] = []
+        changed = True
+    if getattr(args, "block_caller", None):
+        for item in args.block_caller:
+            if item not in blocked:
+                blocked.append(item)
+        cfg["blocked_callers"] = blocked
+        changed = True
+    if getattr(args, "remove_block_caller", None):
+        cfg["blocked_callers"] = [item for item in blocked if item not in set(args.remove_block_caller)]
+        changed = True
+    if args.clear_blocked_callers:
+        cfg["blocked_callers"] = []
+        changed = True
+    if args.clear_bindings:
+        cfg["device_bindings"] = {}
+        changed = True
     if not changed:
         print(json.dumps(cfg, indent=2))
         return
@@ -729,6 +1145,9 @@ def configure_cmd(args: argparse.Namespace) -> None:
 def print_status() -> None:
     cfg = load_config()
     state = load_state()
+    pairs = available_bluez_pairs()
+    resolved_target = resolve_target_mac(cfg, pairs=pairs)
+    resolved_serial = adb_serial(None, cfg, target_mac=resolved_target)
     info = {
         "config": cfg,
         "state": state,
@@ -736,12 +1155,17 @@ def print_status() -> None:
         "wireplumber_config_exists": WIREPLUMBER_CONFIG_PATH.exists(),
         "default_sink": safe_value(get_default_sink),
         "default_source": safe_value(get_default_source),
+        "selected_target_device": resolved_target,
+        "selected_adb_serial": resolved_serial,
+        "call_policy": caller_lists_snapshot(cfg),
+        "active_call_session": load_current_call(),
         "bluez_pairs": bluez_pairs_safe(),
         "bluez_cards": bluez_cards_safe(),
         "bt_connected": parse_bt_devices(safe_text(lambda: bluetoothctl("devices Connected", check=False))),
         "bt_paired": parse_bt_devices(safe_text(lambda: bluetoothctl("devices Paired", check=False))),
         "adb_devices": adb_devices_safe(),
-        "adb_call_state": safe_value(lambda: android_call_state(None, cfg) or "unknown") if cfg.get("adb_serial") else None,
+        "adb_devices_detailed": safe_value(connected_adb_devices),
+        "adb_call_info": safe_value(lambda: android_call_info(None, cfg, target_mac=resolved_target)) if resolved_serial else None,
         "callscoot_modules": [m for m in list_modules_short_safe() if "callscoot" in m.get("args", "")],
         "service_active": safe_text(lambda: run(["systemctl", "--user", "is-active", SERVICE_NAME], check=False).stdout).strip(),
     }
@@ -898,7 +1322,8 @@ def resolve_local_endpoints(cfg: dict[str, Any], args: argparse.Namespace) -> tu
 
 def bridge_up(args: argparse.Namespace) -> None:
     cfg = load_config()
-    target_mac = normalize_mac(args.device or cfg.get("target_device"))
+    pairs = available_bluez_pairs()
+    target_mac = resolve_target_mac(cfg, args.device, pairs=pairs)
     cards = list_cards()
     maybe_force_hfp(cards, target_mac)
     pair = choose_pair(target_mac)
@@ -955,7 +1380,8 @@ def daemon_cmd(args: argparse.Namespace) -> None:
     controller = BridgeController()
     last_call_state: str | None = None
     ring_started_at: float | None = None
-    answered_current_ring = False
+    ring_action_taken = False
+    ring_policy_logged = False
 
     def handle_signal(signum, _frame):
         global STOP
@@ -969,31 +1395,80 @@ def daemon_cmd(args: argparse.Namespace) -> None:
     while not STOP:
         try:
             cfg = load_config()
-            target_mac = normalize_mac(args.device or cfg.get("target_device"))
+            pairs = available_bluez_pairs()
+            target_mac = resolve_target_mac(cfg, args.device, pairs=pairs)
+            selected_adb_serial = adb_serial(None, cfg, target_mac=target_mac)
             echo_cancel = cfg.get("echo_cancel", True) if args.echo_cancel is None else args.echo_cancel == "on"
             latency_msec = int(args.latency or cfg.get("latency_msec") or 60)
             local_source_override = args.source or cfg.get("local_source")
             local_sink_override = args.sink or cfg.get("local_sink")
             auto_answer = cfg.get("auto_answer", False) if getattr(args, "auto_answer", None) is None else args.auto_answer == "on"
             auto_answer_delay = max(0, int(getattr(args, "auto_answer_delay", None) or cfg.get("auto_answer_delay_sec") or 0))
+            log_calls = bool(cfg.get("log_calls", True))
 
-            call_state = None
-            if auto_answer and (cfg.get("adb_serial") or len(adb_devices_safe()) == 1):
-                call_state = android_call_state(None, cfg)
-                if call_state != last_call_state:
-                    if call_state == "ringing":
-                        ring_started_at = time.time()
-                        answered_current_ring = False
-                        log("incoming call detected")
-                    else:
-                        ring_started_at = None
-                        answered_current_ring = False
-                    last_call_state = call_state
-                if call_state == "ringing" and not answered_current_ring and ring_started_at is not None:
-                    if time.time() - ring_started_at >= auto_answer_delay and bluetooth_connected(target_mac):
+            call_info = {"state": None, "incoming_number": None, "direction": None, "adb_serial": selected_adb_serial}
+            if selected_adb_serial:
+                call_info = android_call_info(None, cfg, target_mac=target_mac)
+            pair = choose_pair(target_mac)
+            call_info["target_mac"] = target_mac or (pair.get("mac") if pair else None)
+            call_info["target_name"] = pair.get("description") if pair else None
+            call_state = call_info.get("state")
+            current_session = load_current_call()
+
+            if call_state != last_call_state:
+                if log_calls and call_state in {"ringing", "offhook"} and not current_session:
+                    current_session = create_call_session(call_info, extra={"policy": caller_lists_snapshot(cfg)})
+                if current_session:
+                    session_id = current_session["id"]
+                    update_call_session(
+                        session_id,
+                        state=call_state,
+                        incoming_number=normalize_phone_number(call_info.get("incoming_number")),
+                        direction=call_info.get("direction"),
+                        adb_serial=call_info.get("adb_serial"),
+                        target_mac=call_info.get("target_mac"),
+                        target_name=call_info.get("target_name"),
+                    )
+                    append_call_event(session_id, "call_state_changed", previous_state=last_call_state, state=call_state, call=call_info)
+                if call_state == "ringing":
+                    ring_started_at = time.time()
+                    ring_action_taken = False
+                    ring_policy_logged = False
+                    log("incoming call detected")
+                else:
+                    ring_started_at = None
+                    ring_action_taken = False
+                    ring_policy_logged = False
+                if last_call_state in {"ringing", "offhook"} and call_state == "idle" and current_session:
+                    finalize_call_session(
+                        current_session["id"],
+                        incoming_number=normalize_phone_number(call_info.get("incoming_number")),
+                        direction=call_info.get("direction"),
+                        adb_serial=call_info.get("adb_serial"),
+                        target_mac=call_info.get("target_mac"),
+                        target_name=call_info.get("target_name"),
+                    )
+                    current_session = None
+                last_call_state = call_state
+            elif log_calls and call_state in {"ringing", "offhook"} and not current_session:
+                current_session = create_call_session(call_info, extra={"policy": caller_lists_snapshot(cfg)})
+
+            if auto_answer and call_state == "ringing" and selected_adb_serial:
+                decision = evaluate_call_policy(cfg, call_info)
+                if current_session and not ring_policy_logged:
+                    append_call_event(current_session["id"], "call_policy", decision=decision, call=call_info)
+                    update_call_session(current_session["id"], policy_action=decision["action"], policy_reason=decision["reason"])
+                    ring_policy_logged = True
+                bluetooth_ready = bluetooth_connected(target_mac)
+                if decision["action"] == "reject" and not ring_action_taken:
+                    log(f"auto-rejecting incoming call: {decision['reason']}")
+                    adb_cmd(["shell", "input", "keyevent", "KEYCODE_ENDCALL"], None, cfg, target_mac=target_mac)
+                    ring_action_taken = True
+                elif decision["action"] == "answer" and not ring_action_taken and ring_started_at is not None:
+                    if time.time() - ring_started_at >= auto_answer_delay and bluetooth_ready:
                         log("auto-answering incoming call over ADB")
-                        adb_cmd(["shell", "input", "keyevent", "KEYCODE_HEADSETHOOK"], None, cfg)
-                        answered_current_ring = True
+                        adb_cmd(["shell", "input", "keyevent", "KEYCODE_HEADSETHOOK"], None, cfg, target_mac=target_mac)
+                        ring_action_taken = True
 
             cards = list_cards()
             maybe_force_hfp(cards, target_mac)
@@ -1041,19 +1516,30 @@ def logs_cmd(args: argparse.Namespace) -> None:
     subprocess.run(cmd, check=False)
 
 
+def calls_cmd(args: argparse.Namespace) -> None:
+    print(json.dumps(list_call_sessions(limit=args.lines), indent=2))
+
+
+def call_show_cmd(args: argparse.Namespace) -> None:
+    print(json.dumps(read_call_session(args.session_id), indent=2))
+
+
 def dial_cmd(args: argparse.Namespace) -> None:
     cfg = load_config()
-    adb_cmd(["shell", "am", "start", "-a", "android.intent.action.CALL", "-d", f"tel:{args.number}"], args.serial, cfg)
+    target_mac = resolve_target_mac(cfg)
+    adb_cmd(["shell", "am", "start", "-a", "android.intent.action.CALL", "-d", f"tel:{args.number}"], args.serial, cfg, target_mac=target_mac)
 
 
 def hangup_cmd(args: argparse.Namespace) -> None:
     cfg = load_config()
-    adb_cmd(["shell", "input", "keyevent", "KEYCODE_ENDCALL"], args.serial, cfg)
+    target_mac = resolve_target_mac(cfg)
+    adb_cmd(["shell", "input", "keyevent", "KEYCODE_ENDCALL"], args.serial, cfg, target_mac=target_mac)
 
 
 def answer_cmd(args: argparse.Namespace) -> None:
     cfg = load_config()
-    adb_cmd(["shell", "input", "keyevent", "KEYCODE_HEADSETHOOK"], args.serial, cfg)
+    target_mac = resolve_target_mac(cfg)
+    adb_cmd(["shell", "input", "keyevent", "KEYCODE_HEADSETHOOK"], args.serial, cfg, target_mac=target_mac)
 
 
 def wireplumber_config_text() -> str:
@@ -1113,6 +1599,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clear-adb-serial", action="store_true")
     p.add_argument("--auto-answer", choices=["on", "off"])
     p.add_argument("--auto-answer-delay", type=int)
+    p.add_argument("--auto-select-device", choices=["on", "off"])
+    p.add_argument("--policy-mode", choices=["allow_all", "allowlist", "blocklist"])
+    p.add_argument("--allow-caller", action="append")
+    p.add_argument("--remove-allow-caller", action="append")
+    p.add_argument("--clear-allowed-callers", action="store_true")
+    p.add_argument("--block-caller", action="append")
+    p.add_argument("--remove-block-caller", action="append")
+    p.add_argument("--clear-blocked-callers", action="store_true")
+    p.add_argument("--unknown-callers", choices=["allow", "deny"])
+    p.add_argument("--business-hours")
+    p.add_argument("--clear-business-hours", action="store_true")
+    p.add_argument("--business-days")
+    p.add_argument("--auto-reject", choices=["on", "off"])
+    p.add_argument("--log-calls", choices=["on", "off"])
+    p.add_argument("--clear-bindings", action="store_true")
     p.set_defaults(func=configure_cmd)
 
     p = sub.add_parser("up", help="create the current audio bridge now")
@@ -1140,6 +1641,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-f", "--follow", action="store_true")
     p.add_argument("-n", "--lines", type=int, default=100)
     p.set_defaults(func=logs_cmd)
+
+    p = sub.add_parser("calls", help="list recent call sessions")
+    p.add_argument("-n", "--lines", type=int, default=20)
+    p.set_defaults(func=calls_cmd)
+
+    p = sub.add_parser("call-show", help="show one recorded call session")
+    p.add_argument("session_id")
+    p.set_defaults(func=call_show_cmd)
 
     p = sub.add_parser("dial", help="dial a number over ADB (optional helper)")
     p.add_argument("number")

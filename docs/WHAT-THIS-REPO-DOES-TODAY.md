@@ -24,6 +24,8 @@ CallScoot adds the missing Linux-side glue:
 - automatic HFP/HSP profile selection where possible
 - automatic creation/removal of the PipeWire/Pulse bridge
 - systemd user service for unattended operation
+- optional ADB call control and call automation policies
+- optional AI call-agent integration with transcript + summary logging
 
 ## Exact runtime behavior
 
@@ -70,6 +72,13 @@ laptop microphone
   - Bluetooth helpers
   - PipeWire / Pulse bridge management
   - optional ADB call helpers
+  - active-device selection
+  - call policy engine
+  - call-session logging
+- `src/callscoot_agent.py`
+  - optional STT -> LLM -> TTS pipeline
+  - transcript writer
+  - summary writer
 - `scripts/install-system.sh`
   - installs system packages
   - enables Bluetooth
@@ -99,6 +108,9 @@ laptop microphone
   - `callscoot dial`
   - `callscoot answer`
   - `callscoot hangup`
+  - auto-answer / auto-reject policy actions
+  - call-state detection
+- the optional `callscoot-agent` for STT / LLM / TTS
 
 ADB is **not** used for call audio.
 
@@ -109,6 +121,9 @@ This repo is already useful if you want to:
 - leave an old Linux laptop on at home
 - pair your Android phone to it
 - use the laptop as a desk speakerphone during calls
+- auto-answer or auto-reject calls based on simple policies
+- keep call logs and transcripts locally
+- add an optional OpenAI / Ollama / whisper / espeak call agent later
 - keep the setup running as a background service
 - avoid proprietary desktop phone suites
 
