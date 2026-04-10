@@ -91,7 +91,9 @@ def load_json_file(path: Path, default: Any) -> Any:
 
 def save_json_file(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(data, indent=2) + "\n")
+    tmp_path.replace(path)
 
 
 def load_config() -> dict[str, Any]:
