@@ -22,6 +22,7 @@ See also:
 
 - [`docs/WHAT-THIS-REPO-DOES-TODAY.md`](docs/WHAT-THIS-REPO-DOES-TODAY.md)
 - [`docs/AI-AGENT-INTEGRATION.md`](docs/AI-AGENT-INTEGRATION.md)
+- [`docs/AI-VOICE-ROUTING.md`](docs/AI-VOICE-ROUTING.md)
 
 ---
 

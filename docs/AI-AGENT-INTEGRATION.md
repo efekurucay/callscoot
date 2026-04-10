@@ -6,8 +6,12 @@ This is the shortest practical way to connect an AI agent to CallScoot.
 
 Treat CallScoot as a **CLI backend**.
 
-Your agent should not talk to PipeWire or BlueZ directly.
+Your agent should not talk to PipeWire or BlueZ directly for control.
 Instead, the agent should run `callscoot` commands and read the output.
+
+For the **actual audio stream** case — receiving live call audio in the computer, running STT/LLM/TTS, and sending generated speech back into the call — see:
+
+- [`AI-VOICE-ROUTING.md`](AI-VOICE-ROUTING.md)
 
 ## Recommended integration shape
 
