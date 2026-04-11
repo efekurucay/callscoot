@@ -212,11 +212,18 @@ curl -X POST http://127.0.0.1:8788/v1/current-call/hangup
 
 ## Example integration from another Python app
 
+A zero-dependency Python helper is included at:
+
+```text
+src/callscoot_client.py
+```
+
 A complete sequential lead-calling example is included here:
 
 ```text
 examples/lead_campaign_app.py
 examples/leads.csv.example
+examples/minimal_client_app.py
 ```
 
 It reads a CSV lead list, queues calls one by one, waits for completion, and writes results back into the same CSV.
@@ -224,29 +231,23 @@ It reads a CSV lead list, queues calls one by one, waits for completion, and wri
 ### Minimal Python snippet
 
 ```python
-import json
-import urllib.request
+from callscoot_client import CallScootClient
 
-API = "http://127.0.0.1:8788"
-
-payload = {
-    "number": "+905551112233",
-    "dynamic_variables": {
+client = CallScootClient(base_url="http://127.0.0.1:8788")
+client.health()
+client.queue_outbound_call(
+    "+905551112233",
+    dynamic_variables={
         "campaign_name": "survey",
         "contact_name": "Efe",
     },
-    "metadata": {
+    metadata={
         "row_id": "42",
     },
-}
-req = urllib.request.Request(
-    f"{API}/v1/outbound-calls",
-    data=json.dumps(payload).encode("utf-8"),
-    method="POST",
-    headers={"Content-Type": "application/json"},
 )
-with urllib.request.urlopen(req, timeout=10) as resp:
-    print(resp.read().decode())
+session_id = client.wait_for_session_start()
+session = client.wait_for_session_end(session_id)
+print(session["meta"].get("summary"))
 ```
 
 ## Authentication
@@ -271,6 +272,12 @@ Optional API environment variables:
 CALLSCOOT_API_HOST=127.0.0.1
 CALLSCOOT_API_PORT=8788
 CALLSCOOT_API_TOKEN=
+```
+
+If your external client app uses `src/callscoot_client.py`, it can also use:
+
+```env
+CALLSCOOT_API_BASE=http://127.0.0.1:8788
+```
 
 The SSE event stream sends heartbeat comments regularly so long-lived consumers can keep the connection open more reliably.
-```

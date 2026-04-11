@@ -8,6 +8,7 @@ Use the local CallScoot API instead.
 See:
 
 - [`API.md`](API.md)
+- [`DEPLOYMENT.md`](DEPLOYMENT.md)
 - [`AI-AGENT-RUNBOOK.md`](AI-AGENT-RUNBOOK.md)
 - [`AI-VOICE-ROUTING.md`](AI-VOICE-ROUTING.md)
 
@@ -71,10 +72,17 @@ Your app
 
 ## Example app
 
+A zero-dependency Python helper is included here:
+
+```text
+src/callscoot_client.py
+```
+
 A minimal sequential lead-calling app is included here:
 
 ```text
 examples/lead_campaign_app.py
+examples/minimal_client_app.py
 ```
 
 That script reads a CSV file, places calls one by one, and writes results back into the file.

@@ -17,6 +17,7 @@ fi
 cp "$ROOT_DIR/src/callscoot.py" "$INSTALL_DIR/callscoot.py"
 cp "$ROOT_DIR/src/callscoot_agent.py" "$INSTALL_DIR/callscoot_agent.py"
 cp "$ROOT_DIR/src/callscoot_api.py" "$INSTALL_DIR/callscoot_api.py"
+cp "$ROOT_DIR/src/callscoot_client.py" "$INSTALL_DIR/callscoot_client.py"
 cp "$ROOT_DIR/src/elevenlabs_agent.py" "$INSTALL_DIR/elevenlabs_agent.py"
 cp "$ROOT_DIR/src/agent_orchestrator.py" "$INSTALL_DIR/agent_orchestrator.py"
 cp "$ROOT_DIR/src/agent_control.py" "$INSTALL_DIR/agent_control.py"

@@ -44,7 +44,9 @@ See also:
 - [`docs/AI-VOICE-ROUTING.md`](docs/AI-VOICE-ROUTING.md)
 - [`docs/AI-AGENT-RUNBOOK.md`](docs/AI-AGENT-RUNBOOK.md)
 - [`docs/API.md`](docs/API.md)
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - [`examples/lead_campaign_app.py`](examples/lead_campaign_app.py)
+- [`examples/minimal_client_app.py`](examples/minimal_client_app.py)
 
 ---
 
@@ -134,6 +136,7 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 - Per-call session logs under `~/.local/state/callscoot/calls/`
 - ElevenAgents real-time voice agent mode
 - Local HTTP API for outbound call orchestration and event streaming
+- Zero-dependency Python client helper for external apps (`src/callscoot_client.py`)
 - Optional `callscoot-agent` pipeline with OpenAI / Ollama / whisper-cli / espeak / mock providers
 
 ---
@@ -170,6 +173,7 @@ bin/callscoot                 launcher
 src/callscoot.py             main CLI + daemon
 src/callscoot_agent.py       AI call agent launcher
 src/callscoot_api.py         local HTTP API for external apps
+src/callscoot_client.py      zero-dependency Python client helper
 src/agent_orchestrator.py    ElevenAgents runtime
 src/audio_bridge.py          PulseAudio capture/playback bridge
 src/agent_events.py          structured per-call event log writer
@@ -182,6 +186,31 @@ systemd/callscoot-agent.service
 systemd/callscoot-api.service
 config/10-callscoot-bluetooth.conf
 ```
+
+---
+
+## Recommended deployment shape
+
+CallScoot is meant to run as a **headless runtime** on the Linux machine that is paired to the Android phone.
+
+Your own app should sit on top of the local API.
+
+```text
+client app
+   -> CallScoot local API
+   -> CallScoot runtime services
+   -> ElevenAgents
+   -> Android phone over Bluetooth HFP/HSP
+```
+
+Recommended default:
+
+- run CallScoot and your client app on the **same Linux machine**
+- let the client app call `http://127.0.0.1:8788`
+- keep UI / business logic in the client app
+- keep Bluetooth / telephony / session lifecycle in CallScoot
+
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the full deployment model.
 
 ---
 
@@ -312,6 +341,12 @@ curl -N 'http://127.0.0.1:8788/v1/events/stream?session_id=current'
 ```
 
 See [`docs/API.md`](docs/API.md) for the full external-app integration flow.
+
+If you are writing a Python client app, start from:
+
+- `src/callscoot_client.py`
+- `examples/minimal_client_app.py`
+- `examples/lead_campaign_app.py`
 
 When the Android phone exposes an HFP/HSP audio route, CallScoot automatically builds the bridge.
 
@@ -490,6 +525,45 @@ pactl list short sources
 bluetoothctl devices Paired
 bluetoothctl devices Connected
 ```
+
+---
+
+## Building another app on top of CallScoot
+
+The intended split is:
+
+- **CallScoot** = runtime / telephony substrate / local API
+- **your app** = UI / CRM logic / campaign logic / reporting
+
+If you are building a Python app, you can vendor or import:
+
+```text
+src/callscoot_client.py
+```
+
+Minimal example:
+
+```python
+from callscoot_client import CallScootClient
+
+client = CallScootClient(base_url="http://127.0.0.1:8788")
+client.health()
+client.queue_outbound_call(
+    "+905551112233",
+    dynamic_variables={"campaign_name": "survey"},
+    metadata={"lead_id": "42"},
+)
+session_id = client.wait_for_session_start()
+session = client.wait_for_session_end(session_id)
+print(session["meta"].get("summary"))
+```
+
+For the full integration shape, see:
+
+- [`docs/API.md`](docs/API.md)
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
+- [`examples/minimal_client_app.py`](examples/minimal_client_app.py)
+- [`examples/lead_campaign_app.py`](examples/lead_campaign_app.py)
 
 ---
 

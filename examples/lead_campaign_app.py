@@ -5,8 +5,8 @@ Minimal external app example for CallScoot.
 What it does:
 - reads leads from a CSV file
 - queues one outbound call at a time through the local CallScoot API
-- listens to structured call events
-- waits for the session to finish
+- waits for the session to start and finish
+- fetches the final session data
 - writes outcome fields back into the same CSV
 
 CSV input columns expected:
@@ -29,16 +29,20 @@ Example:
 from __future__ import annotations
 
 import csv
-import json
+import os
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-API_BASE = "http://127.0.0.1:8788"
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from callscoot_client import CallScootClient, CallScootClientError
+
 POLL_INTERVAL_SEC = 2.0
 SESSION_TIMEOUT_SEC = 180
 
@@ -47,60 +51,24 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def http_json(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(f"{API_BASE}{path}", data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        body = resp.read().decode("utf-8")
-        return json.loads(body) if body else {}
+def build_client() -> CallScootClient:
+    base_url = os.environ.get("CALLSCOOT_API_BASE", "http://127.0.0.1:8788")
+    return CallScootClient(base_url=base_url, api_token=os.environ.get("CALLSCOOT_API_TOKEN"))
 
 
-def queue_call(phone: str, name: str | None, company: str | None, row_id: str) -> dict[str, Any]:
-    return http_json(
-        "POST",
-        "/v1/outbound-calls",
-        {
-            "number": phone,
-            "dynamic_variables": {
-                "campaign_name": "lead_campaign",
-                "contact_name": name or "",
-                "company_name": company or "",
-            },
-            "metadata": {
-                "row_id": row_id,
-            },
-            "ttl_sec": 300,
+def queue_call(client: CallScootClient, phone: str, name: str | None, company: str | None, row_id: str) -> dict[str, object]:
+    return client.queue_outbound_call(
+        phone,
+        dynamic_variables={
+            "campaign_name": "lead_campaign",
+            "contact_name": name or "",
+            "company_name": company or "",
         },
+        metadata={
+            "row_id": row_id,
+        },
+        ttl_sec=300,
     )
-
-
-def current_call() -> dict[str, Any] | None:
-    return http_json("GET", "/v1/current-call").get("current_call")
-
-
-def get_call(session_id: str) -> dict[str, Any]:
-    return http_json("GET", f"/v1/calls/{session_id}")
-
-
-def wait_for_session_start(timeout_sec: int = 30) -> str:
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        current = current_call()
-        if current and current.get("id"):
-            return str(current["id"])
-        time.sleep(1.0)
-    raise TimeoutError("timed out waiting for session start")
-
-
-def wait_for_session_end(session_id: str, timeout_sec: int = SESSION_TIMEOUT_SEC) -> dict[str, Any]:
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        current = current_call()
-        if not current or current.get("id") != session_id:
-            return get_call(session_id)
-        time.sleep(POLL_INTERVAL_SEC)
-    raise TimeoutError(f"timed out waiting for session {session_id} to finish")
 
 
 def extract_outcome(session: dict[str, Any]) -> dict[str, str]:
@@ -119,6 +87,7 @@ def extract_outcome(session: dict[str, Any]) -> dict[str, str]:
 
 
 def process_leads(csv_path: Path) -> None:
+    client = build_client()
     rows = list(csv.DictReader(csv_path.open(encoding="utf-8")))
     fieldnames = list(rows[0].keys()) if rows else ["phone", "name", "company"]
     for extra in ["call_status", "session_id", "summary", "last_user_text", "last_agent_text", "completed_at"]:
@@ -135,10 +104,10 @@ def process_leads(csv_path: Path) -> None:
         name = (row.get("name") or "").strip() or None
         company = (row.get("company") or "").strip() or None
         print(f"[lead-app] queueing call {index}: {phone} ({name or 'unknown'})", flush=True)
-        queue_call(phone, name, company, row_id=str(index))
-        session_id = wait_for_session_start()
+        queue_call(client, phone, name, company, row_id=str(index))
+        session_id = client.wait_for_session_start()
         print(f"[lead-app] active session: {session_id}", flush=True)
-        session = wait_for_session_end(session_id)
+        session = client.wait_for_session_end(session_id, timeout_sec=SESSION_TIMEOUT_SEC, poll_interval_sec=POLL_INTERVAL_SEC)
         row.update(extract_outcome(session))
         with csv_path.open("w", newline="", encoding="utf-8") as fp:
             writer = csv.DictWriter(fp, fieldnames=fieldnames)
@@ -159,7 +128,7 @@ def main() -> int:
     try:
         process_leads(csv_path)
         return 0
-    except (urllib.error.URLError, TimeoutError) as exc:
+    except (CallScootClientError, TimeoutError) as exc:
         print(f"[lead-app] error: {exc}", file=sys.stderr)
         return 1
 
