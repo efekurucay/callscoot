@@ -19,10 +19,12 @@ A separate app can:
 
 - queue an outbound call
 - attach dynamic variables / campaign context to the next call
+- inspect and patch runtime configuration
 - inspect current and past sessions
 - stream structured agent events
-- inject contextual updates into the active call
+- inject contextual updates into the active call or a specific session
 - hang up the current call
+- manage pending outbound call requests
 
 CallScoot stays responsible for:
 
@@ -51,6 +53,25 @@ curl http://127.0.0.1:8788/v1/health
 
 ```bash
 curl http://127.0.0.1:8788/v1/status
+```
+
+### Read config
+
+```bash
+curl http://127.0.0.1:8788/v1/config
+```
+
+### Patch config
+
+```bash
+curl -X PATCH http://127.0.0.1:8788/v1/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "auto_answer": true,
+    "auto_answer_delay_sec": 2,
+    "max_call_duration_sec": 600,
+    "echo_cancel": false
+  }'
 ```
 
 ### Queue an outbound call
@@ -94,6 +115,18 @@ curl -X POST http://127.0.0.1:8788/v1/pending-call-requests \
       "customer_id": "cust-88"
     }
   }'
+```
+
+### Get one pending request
+
+```bash
+curl http://127.0.0.1:8788/v1/pending-call-requests/REQUEST_ID
+```
+
+### Delete one pending request
+
+```bash
+curl -X DELETE http://127.0.0.1:8788/v1/pending-call-requests/REQUEST_ID
 ```
 
 ### Current call
@@ -147,12 +180,28 @@ curl -X POST http://127.0.0.1:8788/v1/current-call/contextual-update \
 
 This is non-interrupting guidance for the running agent.
 
+### Inject a contextual update into a specific session
+
+```bash
+curl -X POST http://127.0.0.1:8788/v1/calls/SESSION_ID/contextual-update \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"You already confirmed the callback time. Wrap up the call politely."}'
+```
+
 ### Send a user-style message into the active session
 
 ```bash
 curl -X POST http://127.0.0.1:8788/v1/current-call/user-message \
   -H 'Content-Type: application/json' \
   -d '{"text":"Ask for a convenient callback time before ending the call."}'
+```
+
+### Send a user-style message into a specific session
+
+```bash
+curl -X POST http://127.0.0.1:8788/v1/calls/SESSION_ID/user-message \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Ask for an email address before ending."}'
 ```
 
 ### Hang up current call
@@ -222,4 +271,6 @@ Optional API environment variables:
 CALLSCOOT_API_HOST=127.0.0.1
 CALLSCOOT_API_PORT=8788
 CALLSCOOT_API_TOKEN=
+
+The SSE event stream sends heartbeat comments regularly so long-lived consumers can keep the connection open more reliably.
 ```

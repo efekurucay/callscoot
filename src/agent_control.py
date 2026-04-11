@@ -38,6 +38,22 @@ def list_pending_call_requests() -> list[dict[str, Any]]:
     return items
 
 
+def get_pending_call_request(request_id: str) -> dict[str, Any] | None:
+    for item in list_pending_call_requests():
+        if item.get("request_id") == request_id:
+            return item
+    return None
+
+
+def cancel_pending_call_request(request_id: str) -> bool:
+    items = list_pending_call_requests()
+    remaining = [item for item in items if item.get("request_id") != request_id]
+    if len(remaining) == len(items):
+        return False
+    _save_pending_requests(remaining)
+    return True
+
+
 def add_pending_call_request(
     target_number: str | None,
     dynamic_variables: dict[str, Any] | None = None,
