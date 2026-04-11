@@ -1,3 +1,18 @@
+<p align="center">
+  <img src="assets/banner.svg" alt="CallScoot Banner" width="100%"/>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"/></a>
+  <img src="https://img.shields.io/badge/Platform-Linux-blue?logo=linux&logoColor=white" alt="Platform: Linux"/>
+  <img src="https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white" alt="Python 3.8+"/>
+  <img src="https://img.shields.io/badge/Bluetooth-HFP%20%7C%20HSP-0082FC?logo=bluetooth&logoColor=white" alt="Bluetooth HFP/HSP"/>
+  <img src="https://img.shields.io/badge/Audio-PipeWire-red?logo=linux&logoColor=white" alt="PipeWire"/>
+  <img src="https://img.shields.io/badge/ADB-Optional-green?logo=android&logoColor=white" alt="ADB Optional"/>
+  <img src="https://img.shields.io/badge/AI%20Agent-OpenAI%20%7C%20Ollama-blueviolet?logo=openai&logoColor=white" alt="AI Agent"/>
+  <img src="https://img.shields.io/badge/Headless-Systemd%20Service-lightgrey?logo=systemd&logoColor=white" alt="Systemd Service"/>
+</p>
+
 # CallScoot
 
 Turn a Linux laptop into a Bluetooth call deck for an Android phone.
