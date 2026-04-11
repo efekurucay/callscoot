@@ -1,0 +1,16 @@
+[Unit]
+Description=CallScoot local HTTP API
+After=callscoot-daemon.service callscoot-agent.service
+Wants=callscoot-daemon.service callscoot-agent.service
+
+[Service]
+Type=simple
+Environment=CALLSCOOT_API_HOST=127.0.0.1
+Environment=CALLSCOOT_API_PORT=8788
+EnvironmentFile=-%h/.config/callscoot/elevenagents.env
+ExecStart=%h/.local/lib/callscoot/.venv/bin/python %h/.local/lib/callscoot/callscoot_api.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

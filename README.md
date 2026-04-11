@@ -42,6 +42,7 @@ See also:
 - [`docs/AI-AGENT-INTEGRATION.md`](docs/AI-AGENT-INTEGRATION.md)
 - [`docs/AI-VOICE-ROUTING.md`](docs/AI-VOICE-ROUTING.md)
 - [`docs/AI-AGENT-RUNBOOK.md`](docs/AI-AGENT-RUNBOOK.md)
+- [`docs/API.md`](docs/API.md)
 
 ---
 
@@ -129,6 +130,8 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 - Optional ADB call helpers, active-device auto-selection, and auto-answer support
 - Incoming-call policy engine: allowlist / blocklist / business hours
 - Per-call session logs under `~/.local/state/callscoot/calls/`
+- ElevenAgents real-time voice agent mode
+- Local HTTP API for outbound call orchestration and event streaming
 - Optional `callscoot-agent` pipeline with OpenAI / Ollama / whisper-cli / espeak / mock providers
 
 ---
@@ -153,7 +156,8 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 | `callscoot answer` | Optional ADB helper to answer over ADB |
 | `callscoot hangup` | Optional ADB helper to hang up over ADB |
 | `callscoot-agent bootstrap-audio` | Creates the AI virtual sinks and points CallScoot at them |
-| `callscoot-agent run` | Runs the optional STT -> LLM -> TTS call agent |
+| `callscoot-agent run` | Runs the AI call agent |
+| `callscoot-api` | Runs the local HTTP API for external apps |
 
 ---
 
@@ -162,11 +166,18 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 ```text
 bin/callscoot                 launcher
 src/callscoot.py             main CLI + daemon
-src/callscoot_agent.py       optional AI call agent
+src/callscoot_agent.py       AI call agent launcher
+src/callscoot_api.py         local HTTP API for external apps
+src/agent_orchestrator.py    ElevenAgents runtime
+src/audio_bridge.py          PulseAudio capture/playback bridge
+src/agent_events.py          structured per-call event log writer
+src/agent_memory.py          local SQLite memory/profile store
+src/agent_control.py         pending call requests + command queue
 scripts/install-system.sh    root/system package setup
-scripts/install-user.sh      user install + systemd service
+scripts/install-user.sh      user install + systemd services
 systemd/callscoot-daemon.service
 systemd/callscoot-agent.service
+systemd/callscoot-api.service
 config/10-callscoot-bluetooth.conf
 ```
 
@@ -203,13 +214,18 @@ This installs:
 
 - `~/.local/bin/callscoot`
 - `~/.local/bin/callscoot-agent`
-- `~/.local/lib/callscoot/callscoot.py`
-- `~/.local/lib/callscoot/callscoot_agent.py`
+- `~/.local/bin/callscoot-api`
+- `~/.local/lib/callscoot/*.py`
 - `~/.config/systemd/user/callscoot-daemon.service`
 - `~/.config/systemd/user/callscoot-agent.service`
+- `~/.config/systemd/user/callscoot-api.service`
 - `~/.config/wireplumber/wireplumber.conf.d/10-callscoot-bluetooth.conf`
 
-And it restarts PipeWire/WirePlumber and enables the daemon.
+And it restarts PipeWire/WirePlumber and enables:
+
+- `callscoot-daemon.service`
+- `callscoot-agent.service`
+- `callscoot-api.service`
 
 ---
 
@@ -258,6 +274,42 @@ The daemon is the normal mode:
 systemctl --user status callscoot-daemon.service
 callscoot logs -f
 ```
+
+### Local API for your own app
+
+CallScoot can be used as a local call runtime by another application.
+
+Start / inspect the API service:
+
+```bash
+systemctl --user status callscoot-api.service
+curl http://127.0.0.1:8788/v1/health
+```
+
+Queue an outbound call with injected call context:
+
+```bash
+curl -X POST http://127.0.0.1:8788/v1/outbound-calls \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "number": "+905551112233",
+    "dynamic_variables": {
+      "campaign_name": "lead_qualification",
+      "contact_name": "Efe"
+    },
+    "metadata": {
+      "lead_id": "lead-123"
+    }
+  }'
+```
+
+Stream structured events from the active session:
+
+```bash
+curl -N 'http://127.0.0.1:8788/v1/events/stream?session_id=current'
+```
+
+See [`docs/API.md`](docs/API.md) for the full external-app integration flow.
 
 When the Android phone exposes an HFP/HSP audio route, CallScoot automatically builds the bridge.
 

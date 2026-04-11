@@ -14,6 +14,7 @@ from typing import Any
 import callscoot
 import websockets
 
+from agent_control import claim_pending_call_request, ensure_control_dirs, pop_session_commands
 from agent_events import EventLogger
 from agent_memory import MemoryStore
 from agent_state import AgentState, AgentStateMachine
@@ -121,7 +122,7 @@ def _first_text(*values: Any) -> str:
     return ""
 
 
-def build_dynamic_variables(call_info: dict[str, Any], memory: MemoryStore) -> dict[str, Any]:
+def build_dynamic_variables(call_info: dict[str, Any], memory: MemoryStore, request_context: dict[str, Any] | None = None) -> dict[str, Any]:
     caller_id = callscoot.normalize_phone_number(call_info.get("incoming_number"))
     profile = memory.get_profile(caller_id)
     memories = memory.retrieve_memories(caller_id, limit=3)
@@ -133,6 +134,8 @@ def build_dynamic_variables(call_info: dict[str, Any], memory: MemoryStore) -> d
         "caller_notes": (profile.notes if profile else None) or "",
         "caller_memory_summary": memory_summary,
     }
+    if request_context:
+        variables.update(request_context.get("dynamic_variables") or {})
     return {key: value for key, value in variables.items() if value is not None}
 
 
@@ -150,7 +153,8 @@ async def run_elevenagents_session(
     session_id: str,
     agent_id: str,
     api_key: str,
-    audio_queue,
+    audio_queue: queue.Queue[str],
+    control_queue: queue.Queue[dict[str, Any]],
     playback: PulseAudioPlayback,
     stop_flag: threading.Event,
     event_logger: EventLogger,
@@ -186,6 +190,18 @@ async def run_elevenagents_session(
 
         async def sender() -> None:
             while not stop_flag.is_set():
+                try:
+                    control_event = control_queue.get_nowait()
+                except queue.Empty:
+                    control_event = None
+                if control_event is not None:
+                    try:
+                        await ws.send(json.dumps(control_event))
+                    except websockets.exceptions.ConnectionClosed:
+                        return
+                    finally:
+                        control_queue.task_done()
+                    continue
                 try:
                     chunk = await loop.run_in_executor(None, lambda: audio_queue.get(timeout=0.05))
                 except queue.Empty:
@@ -276,7 +292,7 @@ async def run_elevenagents_session(
                     result = await tools.execute(tool_name, parameters)
                     response = {
                         "type": "client_tool_result",
-                        "tool_call_id": parameters.get("tool_call_id"),
+                        "tool_call_id": tool_call.get("tool_call_id") or parameters.get("tool_call_id"),
                         "result": result,
                         "is_error": bool(result.get("status") == "error") if isinstance(result, dict) else False,
                     }
@@ -305,13 +321,15 @@ async def run_elevenagents_session(
 
 
 class ElevenAgentsCallBridge:
-    def __init__(self, session_id: str, call_info: dict[str, Any], agent_id: str, api_key: str, memory: MemoryStore) -> None:
+    def __init__(self, session_id: str, call_info: dict[str, Any], agent_id: str, api_key: str, memory: MemoryStore, request_context: dict[str, Any] | None = None) -> None:
         self.session_id = session_id
         self.call_info = call_info
         self.agent_id = agent_id
         self.api_key = api_key
         self.memory = memory
+        self.request_context = request_context or {}
         self.audio_queue: queue.Queue[str] = queue.Queue(maxsize=32)
+        self.control_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=64)
         self.stop_flag = threading.Event()
         self.capture = PulseAudioCapture(RX_SOURCE, self.audio_queue, self.stop_flag)
         self.playback = PulseAudioPlayback(TX_SINK)
@@ -321,15 +339,20 @@ class ElevenAgentsCallBridge:
         self.thread: threading.Thread | None = None
         self.error: BaseException | None = None
         self.reconnects = 0
-        self.dynamic_variables = build_dynamic_variables(call_info, memory)
+        self.dynamic_variables = build_dynamic_variables(call_info, memory, self.request_context)
 
     def start(self) -> None:
         self.playback.start()
         self.capture.start()
         self.thread = threading.Thread(target=self._run_session, name="elevenagents-session", daemon=True)
         self.thread.start()
-        self.event_logger.emit("agent_session_started", payload={"mode": "elevenagents", "tools": self.tools.names()})
-        callscoot.append_call_event(self.session_id, "agent_session_started", config={"mode": "elevenagents", "tools": self.tools.names()})
+        payload = {
+            "mode": "elevenagents",
+            "tools": self.tools.names(),
+            "request_context": self.request_context,
+        }
+        self.event_logger.emit("agent_session_started", payload=payload)
+        callscoot.append_call_event(self.session_id, "agent_session_started", config=payload)
 
     def _run_session(self) -> None:
         try:
@@ -341,6 +364,7 @@ class ElevenAgentsCallBridge:
                             self.agent_id,
                             self.api_key,
                             self.audio_queue,
+                            self.control_queue,
                             self.playback,
                             self.stop_flag,
                             self.event_logger,
@@ -384,6 +408,20 @@ class ElevenAgentsCallBridge:
         callscoot.update_call_session(self.session_id, summary=summary)
         (callscoot.call_session_dir(self.session_id) / "summary.txt").write_text(summary + "\n", encoding="utf-8")
 
+    def queue_contextual_update(self, text: str) -> None:
+        try:
+            self.control_queue.put_nowait({"type": "contextual_update", "text": text})
+            self.event_logger.emit("contextual_update_queued", payload={"text": text})
+        except queue.Full:
+            self.event_logger.emit("client_error", payload={"error": "control_queue_full", "type": "contextual_update"})
+
+    def queue_user_message(self, text: str) -> None:
+        try:
+            self.control_queue.put_nowait({"type": "user_message", "text": text})
+            self.event_logger.emit("user_message_queued", payload={"text": text})
+        except queue.Full:
+            self.event_logger.emit("client_error", payload={"error": "control_queue_full", "type": "user_message"})
+
     def stop(self) -> None:
         self.stop_flag.set()
         self.capture.stop()
@@ -395,6 +433,7 @@ class ElevenAgentsCallBridge:
 def run_forever() -> None:
     configure_logging()
     bootstrap_audio()
+    ensure_control_dirs()
     agent_id = get_env("ELEVENLABS_AGENT_ID")
     api_key = get_env("ELEVENLABS_API_KEY")
     memory = MemoryStore()
@@ -426,8 +465,20 @@ def run_forever() -> None:
                     if bridge and current_session_id:
                         bridge.stop()
                     current_session_id = active_session_id
-                    bridge = ElevenAgentsCallBridge(active_session_id, call_info, agent_id, api_key, memory)
+                    request_context = claim_pending_call_request(call_info, active_session_id)
+                    if request_context:
+                        callscoot.update_call_session(active_session_id, client_request=request_context)
+                    bridge = ElevenAgentsCallBridge(active_session_id, call_info, agent_id, api_key, memory, request_context=request_context)
                     bridge.start()
+                if bridge:
+                    for command in pop_session_commands(active_session_id):
+                        command_type = str(command.get("type") or "")
+                        payload = command.get("payload") or {}
+                        if command_type == "contextual_update" and payload.get("text"):
+                            bridge.queue_contextual_update(str(payload["text"]))
+                        elif command_type == "user_message" and payload.get("text"):
+                            bridge.queue_user_message(str(payload["text"]))
+                        bridge.event_logger.emit("external_command", payload=command)
             else:
                 if bridge:
                     bridge.stop()

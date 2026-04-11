@@ -8,7 +8,7 @@ BIN_DIR="$HOME/.local/bin"
 SERVICE_DIR="$HOME/.config/systemd/user"
 WIREPLUMBER_DIR="$HOME/.config/wireplumber/wireplumber.conf.d"
 
-mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$SERVICE_DIR" "$WIREPLUMBER_DIR"
+mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$SERVICE_DIR" "$WIREPLUMBER_DIR" "$HOME/.config/callscoot"
 python3 -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip >/dev/null
 if [[ -f "$ROOT_DIR/requirements.txt" ]]; then
@@ -16,15 +16,17 @@ if [[ -f "$ROOT_DIR/requirements.txt" ]]; then
 fi
 cp "$ROOT_DIR/src/callscoot.py" "$INSTALL_DIR/callscoot.py"
 cp "$ROOT_DIR/src/callscoot_agent.py" "$INSTALL_DIR/callscoot_agent.py"
+cp "$ROOT_DIR/src/callscoot_api.py" "$INSTALL_DIR/callscoot_api.py"
 cp "$ROOT_DIR/src/elevenlabs_agent.py" "$INSTALL_DIR/elevenlabs_agent.py"
 cp "$ROOT_DIR/src/agent_orchestrator.py" "$INSTALL_DIR/agent_orchestrator.py"
+cp "$ROOT_DIR/src/agent_control.py" "$INSTALL_DIR/agent_control.py"
 cp "$ROOT_DIR/src/audio_bridge.py" "$INSTALL_DIR/audio_bridge.py"
 cp "$ROOT_DIR/src/agent_tools.py" "$INSTALL_DIR/agent_tools.py"
 cp "$ROOT_DIR/src/agent_memory.py" "$INSTALL_DIR/agent_memory.py"
 cp "$ROOT_DIR/src/agent_state.py" "$INSTALL_DIR/agent_state.py"
 cp "$ROOT_DIR/src/agent_events.py" "$INSTALL_DIR/agent_events.py"
 cp "$ROOT_DIR/src/webhook_server.py" "$INSTALL_DIR/webhook_server.py"
-chmod +x "$INSTALL_DIR/callscoot.py" "$INSTALL_DIR/callscoot_agent.py" "$INSTALL_DIR/elevenlabs_agent.py" "$INSTALL_DIR/agent_orchestrator.py" "$INSTALL_DIR/webhook_server.py"
+chmod +x "$INSTALL_DIR/callscoot.py" "$INSTALL_DIR/callscoot_agent.py" "$INSTALL_DIR/callscoot_api.py" "$INSTALL_DIR/elevenlabs_agent.py" "$INSTALL_DIR/agent_orchestrator.py" "$INSTALL_DIR/webhook_server.py"
 cat > "$BIN_DIR/callscoot" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -43,15 +45,28 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
 fi
 exec "$PYTHON_BIN" "$HOME/.local/lib/callscoot/callscoot_agent.py" "$@"
 EOF
-chmod +x "$BIN_DIR/callscoot" "$BIN_DIR/callscoot-agent"
+cat > "$BIN_DIR/callscoot-api" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+PYTHON_BIN="$HOME/.local/lib/callscoot/.venv/bin/python"
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  PYTHON_BIN="python3"
+fi
+exec "$PYTHON_BIN" "$HOME/.local/lib/callscoot/callscoot_api.py" "$@"
+EOF
+chmod +x "$BIN_DIR/callscoot" "$BIN_DIR/callscoot-agent" "$BIN_DIR/callscoot-api"
 cp "$ROOT_DIR/systemd/callscoot-daemon.service" "$SERVICE_DIR/callscoot-daemon.service"
 cp "$ROOT_DIR/systemd/callscoot-agent.service" "$SERVICE_DIR/callscoot-agent.service"
+cp "$ROOT_DIR/systemd/callscoot-api.service" "$SERVICE_DIR/callscoot-api.service"
 cp "$ROOT_DIR/config/10-callscoot-bluetooth.conf" "$WIREPLUMBER_DIR/10-callscoot-bluetooth.conf"
+if [[ -f "$ROOT_DIR/config/elevenagents.env.example" ]]; then
+  cp -n "$ROOT_DIR/config/elevenagents.env.example" "$HOME/.config/callscoot/elevenagents.env" || true
+fi
 
 "$BIN_DIR/callscoot" install-user-config >/dev/null
 systemctl --user daemon-reload
 systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service
-systemctl --user enable --now callscoot-daemon.service
+systemctl --user enable --now callscoot-daemon.service callscoot-agent.service callscoot-api.service
 
 echo "[callscoot] user install complete"
 echo "[callscoot] binary: $BIN_DIR/callscoot"
