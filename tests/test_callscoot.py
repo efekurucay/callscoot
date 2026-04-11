@@ -79,6 +79,18 @@ class CallScootTests(unittest.TestCase):
         self.assertEqual(loaded["meta"]["summary"], "Done")
         self.assertEqual(loaded["transcript"][0]["text"], "Merhaba")
 
+    def test_public_config_masks_sip_password_and_auto_backend(self):
+        cfg = self.callscoot.DEFAULTS.copy()
+        cfg.update({
+            "telephony_backend": "auto",
+            "sip_server": "sip.example.com",
+            "sip_username": "1001",
+            "sip_password": "secret",
+        })
+        public = self.callscoot.public_config(cfg)
+        self.assertEqual(public["sip_password"], "***")
+        self.assertEqual(self.callscoot.selected_telephony_backend(cfg), "sip")
+
 
 if __name__ == "__main__":
     unittest.main()

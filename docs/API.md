@@ -55,11 +55,21 @@ curl http://127.0.0.1:8788/v1/health
 curl http://127.0.0.1:8788/v1/status
 ```
 
+Status includes:
+
+- service state
+- sanitized config
+- resolved telephony backend
+- `sip_state` when SIP mode is configured
+- current call
+
 ### Read config
 
 ```bash
 curl http://127.0.0.1:8788/v1/config
 ```
+
+Sensitive values such as `sip_password` are masked in API responses.
 
 ### Patch config
 
@@ -71,6 +81,22 @@ curl -X PATCH http://127.0.0.1:8788/v1/config \
     "auto_answer_delay_sec": 2,
     "max_call_duration_sec": 600,
     "echo_cancel": false
+  }'
+```
+
+SIP-specific patch example:
+
+```bash
+curl -X PATCH http://127.0.0.1:8788/v1/config \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "telephony_backend": "sip",
+    "sip_server": "sip.example.com",
+    "sip_username": "1001",
+    "sip_password": "supersecret",
+    "sip_port": 5060,
+    "sip_transport": "udp",
+    "sip_audio_mode": "agent"
   }'
 ```
 
@@ -97,7 +123,9 @@ curl -X POST http://127.0.0.1:8788/v1/outbound-calls \
 This does two things:
 
 1. stores a pending request for the next matching call session
-2. starts the Android phone call over ADB
+2. starts the call over the selected telephony backend
+
+If `telephony_backend` resolves to `sip`, the response includes `via: "sip"` and the generated SIP URI. Otherwise CallScoot uses the Android/ADB path.
 
 When the live session starts, the pending request is claimed and injected into the agent as dynamic variables.
 
@@ -202,6 +230,12 @@ curl -X POST http://127.0.0.1:8788/v1/current-call/user-message \
 curl -X POST http://127.0.0.1:8788/v1/calls/SESSION_ID/user-message \
   -H 'Content-Type: application/json' \
   -d '{"text":"Ask for an email address before ending."}'
+```
+
+### Answer current call
+
+```bash
+curl -X POST http://127.0.0.1:8788/v1/current-call/answer
 ```
 
 ### Hang up current call

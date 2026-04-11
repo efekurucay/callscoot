@@ -4,7 +4,7 @@ This document describes the repository **as it exists right now**.
 
 ## Short version
 
-CallScoot is a **Linux-side Bluetooth call-audio bridge** for Android phones.
+CallScoot is primarily a **Linux-side Bluetooth call-audio bridge** for Android phones, with an optional SIP telephony mode.
 
 If Android routes call audio to the laptop over **Bluetooth HFP/HSP**, CallScoot connects:
 
@@ -25,6 +25,7 @@ CallScoot adds the missing Linux-side glue:
 - automatic creation/removal of the PipeWire/Pulse bridge
 - systemd user service for unattended operation
 - optional ADB call control and call automation policies
+- optional SIP account registration + SIP call control
 - optional AI call-agent integration with transcript + summary logging
 
 ## Exact runtime behavior

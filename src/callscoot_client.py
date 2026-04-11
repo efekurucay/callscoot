@@ -187,6 +187,9 @@ class CallScootClient:
         path = "/v1/current-call/user-message" if not session_id else f"/v1/calls/{session_id}/user-message"
         return self._request("POST", path, {"text": text})
 
+    def answer_current_call(self) -> dict[str, Any]:
+        return self._request("POST", "/v1/current-call/answer")
+
     def hangup_current_call(self) -> dict[str, Any]:
         return self._request("POST", "/v1/current-call/hangup")
 

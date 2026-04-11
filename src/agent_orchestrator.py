@@ -105,6 +105,20 @@ def bootstrap_audio() -> None:
 
 
 def detect_active_call(main_cfg: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if callscoot.selected_telephony_backend(main_cfg) == "sip":
+        sip_state = callscoot.load_sip_state()
+        info = {
+            "state": sip_state.get("state"),
+            "incoming_number": sip_state.get("remote_number"),
+            "direction": sip_state.get("direction"),
+            "adb_serial": None,
+            "target_mac": None,
+            "target_name": main_cfg.get("sip_server"),
+        }
+        route = None
+        if info["state"] in {"calling", "ringing", "offhook"}:
+            route = {"mode": "sip", "description": f"SIP {main_cfg.get('sip_server') or ''}".strip()}
+        return info, route
     target_mac = callscoot.resolve_target_mac(main_cfg)
     info = {"state": None, "incoming_number": None, "direction": None, "adb_serial": None, "target_mac": target_mac}
     serial = callscoot.adb_serial(None, main_cfg, target_mac=target_mac)

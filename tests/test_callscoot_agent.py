@@ -52,6 +52,20 @@ class CallScootAgentTests(unittest.TestCase):
         out.extend(seg.feed(silence))
         self.assertTrue(out)
 
+    def test_detect_active_call_uses_sip_state_when_selected(self):
+        cfg = self.callscoot.load_config()
+        cfg.update({
+            "telephony_backend": "sip",
+            "sip_server": "sip.example.com",
+            "sip_username": "1001",
+        })
+        self.callscoot.save_sip_state({"state": "offhook", "remote_number": "+905551112233", "direction": "outbound"})
+        info, route = self.agent.detect_active_call(cfg)
+        self.assertEqual(info["state"], "offhook")
+        self.assertEqual(info["incoming_number"], "+905551112233")
+        self.assertEqual(info["direction"], "outbound")
+        self.assertEqual(route["mode"], "sip")
+
 
 if __name__ == "__main__":
     unittest.main()

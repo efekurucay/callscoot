@@ -20,6 +20,7 @@ STATE_DIR = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "stat
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = STATE_DIR / "bridge-state.json"
 CURRENT_CALL_PATH = STATE_DIR / "current-call.json"
+SIP_STATE_PATH = STATE_DIR / "sip-state.json"
 CALLS_DIR = STATE_DIR / "calls"
 WIREPLUMBER_CONFIG_PATH = Path.home() / ".config" / "wireplumber" / "wireplumber.conf.d" / "10-callscoot-bluetooth.conf"
 SERVICE_NAME = "callscoot-daemon.service"
@@ -47,6 +48,15 @@ DEFAULTS: dict[str, Any] = {
     "business_days": WEEKDAY_NAMES[:],
     "auto_reject_blocked": False,
     "log_calls": True,
+    "telephony_backend": "adb",
+    "sip_server": None,
+    "sip_username": None,
+    "sip_password": None,
+    "sip_port": 5060,
+    "sip_transport": "udp",
+    "sip_capture_device": None,
+    "sip_playback_device": None,
+    "sip_audio_mode": "direct",
 }
 LAST_FORCE_HFP: dict[str, float] = {}
 STOP = False
@@ -109,6 +119,24 @@ def save_config(cfg: dict[str, Any]) -> None:
     save_json_file(CONFIG_PATH, cfg)
 
 
+def sip_configured(cfg: dict[str, Any]) -> bool:
+    return bool(str(cfg.get("sip_server") or "").strip() and str(cfg.get("sip_username") or "").strip())
+
+
+def selected_telephony_backend(cfg: dict[str, Any]) -> str:
+    backend = str(cfg.get("telephony_backend") or DEFAULTS["telephony_backend"]).strip().lower()
+    if backend == "auto":
+        return "sip" if sip_configured(cfg) else "adb"
+    return backend if backend in {"adb", "sip"} else "adb"
+
+
+def public_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    cleaned = dict(cfg)
+    if cleaned.get("sip_password"):
+        cleaned["sip_password"] = "***"
+    return cleaned
+
+
 def load_state() -> dict[str, Any]:
     ensure_dirs()
     return load_json_file(STATE_PATH, {})
@@ -137,6 +165,21 @@ def save_current_call(data: dict[str, Any]) -> None:
 def clear_current_call() -> None:
     if CURRENT_CALL_PATH.exists():
         CURRENT_CALL_PATH.unlink()
+
+
+def load_sip_state() -> dict[str, Any]:
+    ensure_dirs()
+    return load_json_file(SIP_STATE_PATH, {})
+
+
+def save_sip_state(state: dict[str, Any]) -> None:
+    ensure_dirs()
+    save_json_file(SIP_STATE_PATH, state)
+
+
+def clear_sip_state() -> None:
+    if SIP_STATE_PATH.exists():
+        SIP_STATE_PATH.unlink()
 
 
 def utc_now_iso() -> str:
@@ -1113,6 +1156,48 @@ def configure_cmd(args: argparse.Namespace) -> None:
     if args.log_calls is not None:
         cfg["log_calls"] = args.log_calls == "on"
         changed = True
+    if args.telephony_backend is not None:
+        cfg["telephony_backend"] = args.telephony_backend
+        changed = True
+    if args.sip_server is not None:
+        cfg["sip_server"] = args.sip_server or None
+        changed = True
+    if args.sip_username is not None:
+        cfg["sip_username"] = args.sip_username or None
+        changed = True
+    if args.sip_password is not None:
+        cfg["sip_password"] = args.sip_password or None
+        changed = True
+    if args.sip_port is not None:
+        cfg["sip_port"] = max(0, int(args.sip_port))
+        changed = True
+    if args.sip_transport is not None:
+        cfg["sip_transport"] = args.sip_transport
+        changed = True
+    if args.sip_capture_device is not None:
+        cfg["sip_capture_device"] = args.sip_capture_device or None
+        changed = True
+    if args.sip_playback_device is not None:
+        cfg["sip_playback_device"] = args.sip_playback_device or None
+        changed = True
+    if args.sip_audio_mode is not None:
+        cfg["sip_audio_mode"] = args.sip_audio_mode
+        changed = True
+    if args.clear_sip:
+        for key in [
+            "sip_server",
+            "sip_username",
+            "sip_password",
+            "sip_port",
+            "sip_transport",
+            "sip_capture_device",
+            "sip_playback_device",
+            "sip_audio_mode",
+        ]:
+            cfg[key] = DEFAULTS[key]
+        if cfg.get("telephony_backend") == "sip":
+            cfg["telephony_backend"] = "adb"
+        changed = True
     allowed = list(cfg.get("allowed_callers") or [])
     blocked = list(cfg.get("blocked_callers") or [])
     if getattr(args, "allow_caller", None):
@@ -1143,10 +1228,10 @@ def configure_cmd(args: argparse.Namespace) -> None:
         cfg["device_bindings"] = {}
         changed = True
     if not changed:
-        print(json.dumps(cfg, indent=2))
+        print(json.dumps(public_config(cfg), indent=2))
         return
     save_config(cfg)
-    print(json.dumps(cfg, indent=2))
+    print(json.dumps(public_config(cfg), indent=2))
 
 
 def print_status() -> None:
@@ -1155,15 +1240,21 @@ def print_status() -> None:
     pairs = available_bluez_pairs()
     resolved_target = resolve_target_mac(cfg, pairs=pairs)
     resolved_serial = adb_serial(None, cfg, target_mac=resolved_target)
+    resolved_backend = selected_telephony_backend(cfg)
     info = {
-        "config": cfg,
+        "config": public_config(cfg),
         "state": state,
+        "telephony_backend": {
+            "configured": cfg.get("telephony_backend"),
+            "selected": resolved_backend,
+        },
+        "sip_state": load_sip_state(),
         "wireplumber_config": str(WIREPLUMBER_CONFIG_PATH),
         "wireplumber_config_exists": WIREPLUMBER_CONFIG_PATH.exists(),
         "default_sink": safe_value(get_default_sink),
         "default_source": safe_value(get_default_source),
         "selected_target_device": resolved_target,
-        "selected_adb_serial": resolved_serial,
+        "selected_adb_serial": resolved_serial if resolved_backend == "adb" else None,
         "call_policy": caller_lists_snapshot(cfg),
         "active_call_session": load_current_call(),
         "bluez_pairs": bluez_pairs_safe(),
@@ -1172,7 +1263,7 @@ def print_status() -> None:
         "bt_paired": parse_bt_devices(safe_text(lambda: bluetoothctl("devices Paired", check=False))),
         "adb_devices": adb_devices_safe(),
         "adb_devices_detailed": safe_value(connected_adb_devices),
-        "adb_call_info": safe_value(lambda: android_call_info(None, cfg, target_mac=resolved_target)) if resolved_serial else None,
+        "adb_call_info": safe_value(lambda: android_call_info(None, cfg, target_mac=resolved_target)) if resolved_serial and resolved_backend == "adb" else None,
         "callscoot_modules": [m for m in list_modules_short_safe() if "callscoot" in m.get("args", "")],
         "service_active": safe_text(lambda: run(["systemctl", "--user", "is-active", SERVICE_NAME], check=False).stdout).strip(),
     }
@@ -1403,9 +1494,10 @@ def daemon_cmd(args: argparse.Namespace) -> None:
     while not STOP:
         try:
             cfg = load_config()
+            resolved_backend = selected_telephony_backend(cfg)
             pairs = available_bluez_pairs()
-            target_mac = resolve_target_mac(cfg, args.device, pairs=pairs)
-            selected_adb_serial = adb_serial(None, cfg, target_mac=target_mac)
+            target_mac = resolve_target_mac(cfg, args.device, pairs=pairs) if resolved_backend == "adb" else None
+            selected_adb_serial = adb_serial(None, cfg, target_mac=target_mac) if resolved_backend == "adb" else None
             echo_cancel = cfg.get("echo_cancel", True) if args.echo_cancel is None else args.echo_cancel == "on"
             latency_msec = int(args.latency or cfg.get("latency_msec") or 60)
             local_source_override = args.source or cfg.get("local_source")
@@ -1415,6 +1507,11 @@ def daemon_cmd(args: argparse.Namespace) -> None:
             max_call_duration_override = getattr(args, "max_call_duration", None)
             max_call_duration_sec = max(0, int(cfg.get("max_call_duration_sec") or 0)) if max_call_duration_override is None else max(0, int(max_call_duration_override))
             log_calls = bool(cfg.get("log_calls", True))
+
+            if resolved_backend == "sip":
+                controller.cleanup()
+                time.sleep(2)
+                continue
 
             call_info = {"state": None, "incoming_number": None, "direction": None, "adb_serial": selected_adb_serial}
             if selected_adb_serial:
@@ -1563,20 +1660,49 @@ def call_show_cmd(args: argparse.Namespace) -> None:
     print(json.dumps(read_call_session(args.session_id), indent=2))
 
 
+def sip_api_client():
+    try:
+        from callscoot_client import CallScootClient
+    except ImportError as exc:  # noqa: BLE001
+        raise CommandError("SIP control requires callscoot-api or callscoot_client.py to be available") from exc
+    return CallScootClient.from_env()
+
+
 def dial_cmd(args: argparse.Namespace) -> None:
     cfg = load_config()
+    if not args.serial and selected_telephony_backend(cfg) == "sip":
+        try:
+            response = sip_api_client().queue_outbound_call(args.number)
+        except Exception as exc:  # noqa: BLE001
+            raise CommandError(f"SIP control requires callscoot-api.service: {exc}") from exc
+        print(json.dumps(response, indent=2))
+        return
     target_mac = resolve_target_mac(cfg)
     adb_cmd(["shell", "am", "start", "-a", "android.intent.action.CALL", "-d", f"tel:{args.number}"], args.serial, cfg, target_mac=target_mac)
 
 
 def hangup_cmd(args: argparse.Namespace) -> None:
     cfg = load_config()
+    if not args.serial and selected_telephony_backend(cfg) == "sip":
+        try:
+            response = sip_api_client().hangup_current_call()
+        except Exception as exc:  # noqa: BLE001
+            raise CommandError(f"SIP control requires callscoot-api.service: {exc}") from exc
+        print(json.dumps(response, indent=2))
+        return
     target_mac = resolve_target_mac(cfg)
     adb_cmd(["shell", "input", "keyevent", "KEYCODE_ENDCALL"], args.serial, cfg, target_mac=target_mac)
 
 
 def answer_cmd(args: argparse.Namespace) -> None:
     cfg = load_config()
+    if not args.serial and selected_telephony_backend(cfg) == "sip":
+        try:
+            response = sip_api_client().answer_current_call()
+        except Exception as exc:  # noqa: BLE001
+            raise CommandError(f"SIP control requires callscoot-api.service: {exc}") from exc
+        print(json.dumps(response, indent=2))
+        return
     target_mac = resolve_target_mac(cfg)
     adb_cmd(["shell", "input", "keyevent", "KEYCODE_HEADSETHOOK"], args.serial, cfg, target_mac=target_mac)
 
@@ -1653,6 +1779,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--business-days")
     p.add_argument("--auto-reject", choices=["on", "off"])
     p.add_argument("--log-calls", choices=["on", "off"])
+    p.add_argument("--telephony-backend", choices=["adb", "sip", "auto"])
+    p.add_argument("--sip-server")
+    p.add_argument("--sip-username")
+    p.add_argument("--sip-password")
+    p.add_argument("--sip-port", type=int)
+    p.add_argument("--sip-transport", choices=["udp", "tcp", "tls"])
+    p.add_argument("--sip-capture-device")
+    p.add_argument("--sip-playback-device")
+    p.add_argument("--sip-audio-mode", choices=["direct", "agent"])
+    p.add_argument("--clear-sip", action="store_true")
     p.add_argument("--clear-bindings", action="store_true")
     p.set_defaults(func=configure_cmd)
 

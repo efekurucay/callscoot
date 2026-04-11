@@ -23,7 +23,8 @@ CallScoot makes the laptop behave like a local call console:
 - laptop microphone audio goes back to the phone
 - laptop speakers play the remote caller
 - optional **echo cancellation** is enabled by default
-- optional **ADB helpers** can dial / answer / hang up calls
+- optional **ADB helpers** can dial / answer / hang up Android calls
+- optional **SIP telephony mode** can register to a SIP server and place calls directly
 - optional **call policies** can auto-answer / auto-reject incoming calls
 - optional **real-time voice agent mode** can run inside the call
 - local HTTP API makes it easy for another app to use CallScoot as a call runtime
@@ -44,6 +45,7 @@ See also:
 - [`docs/AI-VOICE-ROUTING.md`](docs/AI-VOICE-ROUTING.md)
 - [`docs/AI-AGENT-RUNBOOK.md`](docs/AI-AGENT-RUNBOOK.md)
 - [`docs/API.md`](docs/API.md)
+- [`docs/SIP.md`](docs/SIP.md)
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)
 - [`examples/lead_campaign_app.py`](examples/lead_campaign_app.py)
 - [`examples/minimal_client_app.py`](examples/minimal_client_app.py)
@@ -52,7 +54,7 @@ See also:
 
 ## What this repo does right now
 
-As shipped today, CallScoot is a **Linux-side Bluetooth call audio bridge**.
+As shipped today, CallScoot is primarily a **Linux-side Bluetooth call audio bridge** with an optional SIP telephony backend.
 
 It is useful when all of these are true:
 
@@ -132,6 +134,7 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 - Headless-friendly WirePlumber config (`seat-monitoring = disabled`)
 - Systemd user service for always-on usage
 - Optional ADB call helpers, active-device auto-selection, and auto-answer support
+- Optional SIP backend using `pjsua2` with configurable server / username / password / transport
 - Incoming-call policy engine: allowlist / blocklist / business hours
 - Per-call session logs under `~/.local/state/callscoot/calls/`
 - ElevenAgents real-time voice agent mode
@@ -149,7 +152,7 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 | `callscoot devices` | Lists paired Bluetooth devices |
 | `callscoot trust MAC` | Marks a paired device as trusted in BlueZ |
 | `callscoot connect MAC` | Tries to connect the paired Bluetooth device |
-| `callscoot configure ...` | Saves the target device / local audio / latency / ADB preferences |
+| `callscoot configure ...` | Saves the target device / local audio / latency / ADB or SIP preferences |
 | `callscoot up` | Builds the audio bridge immediately if a phone HFP/HSP route exists |
 | `callscoot down` | Removes the bridge modules |
 | `callscoot daemon` | Runs the background watcher that auto-builds the bridge |
@@ -157,9 +160,9 @@ So the phone keeps the actual cellular/VoIP call, while the laptop becomes the l
 | `callscoot logs -f` | Follows daemon logs |
 | `callscoot calls` | Lists recent call sessions |
 | `callscoot call-show ID` | Shows one call session including transcript if present |
-| `callscoot dial NUMBER` | Optional ADB helper to start a call on Android |
-| `callscoot answer` | Optional ADB helper to answer over ADB |
-| `callscoot hangup` | Optional ADB helper to hang up over ADB |
+| `callscoot dial NUMBER` | Starts a call through the selected telephony backend (`adb` or `sip`) |
+| `callscoot answer` | Answers through the selected telephony backend |
+| `callscoot hangup` | Hangs up through the selected telephony backend |
 | `callscoot-agent bootstrap-audio` | Creates the AI virtual sinks and points CallScoot at them |
 | `callscoot-agent run` | Runs the AI call agent |
 | `callscoot-api` | Runs the local HTTP API for external apps |
@@ -174,6 +177,7 @@ src/callscoot.py             main CLI + daemon
 src/callscoot_agent.py       AI call agent launcher
 src/callscoot_api.py         local HTTP API for external apps
 src/callscoot_client.py      zero-dependency Python client helper
+src/sip_backend.py           optional SIP telephony backend
 src/agent_orchestrator.py    ElevenAgents runtime
 src/audio_bridge.py          PulseAudio capture/playback bridge
 src/agent_events.py          structured per-call event log writer
@@ -396,6 +400,41 @@ Clear pinned values:
 callscoot configure --clear-device
 callscoot configure --clear-adb-serial
 ```
+
+### SIP telephony mode
+
+```bash
+callscoot configure \
+  --telephony-backend sip \
+  --sip-server sip.example.com \
+  --sip-username 1001 \
+  --sip-password supersecret \
+  --sip-port 5060 \
+  --sip-transport udp \
+  --sip-audio-mode direct
+```
+
+Optional SIP audio device overrides (direct mode):
+
+```bash
+callscoot configure --sip-playback-device pipewire
+callscoot configure --sip-capture-device pipewire
+```
+
+Enable SIP + AI agent routing:
+
+```bash
+callscoot configure --sip-audio-mode agent
+systemctl --user restart callscoot-api.service callscoot-agent.service
+```
+
+Remove SIP settings and switch back to Android/ADB mode:
+
+```bash
+callscoot configure --clear-sip
+```
+
+See [`docs/SIP.md`](docs/SIP.md) for details.
 
 ---
 

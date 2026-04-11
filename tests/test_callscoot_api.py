@@ -25,15 +25,16 @@ class CallScootApiTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.home = Path(self.tempdir.name)
-        for name in ["callscoot", "agent_control", "callscoot_api"]:
+        for name in ["callscoot", "agent_control", "callscoot_api", "sip_backend"]:
             sys.modules.pop(name, None)
         self.callscoot = load_module("callscoot", SRC / "callscoot.py", self.home)
+        load_module("sip_backend", SRC / "sip_backend.py", self.home)
         self.agent_control = load_module("agent_control", SRC / "agent_control.py", self.home)
         self.api = load_module("callscoot_api", SRC / "callscoot_api.py", self.home)
 
     def tearDown(self):
         self.tempdir.cleanup()
-        for name in ["callscoot", "agent_control", "callscoot_api"]:
+        for name in ["callscoot", "agent_control", "callscoot_api", "sip_backend"]:
             sys.modules.pop(name, None)
 
     def test_normalize_patch_config(self):
@@ -58,6 +59,24 @@ class CallScootApiTests(unittest.TestCase):
         session = self.callscoot.create_call_session({"incoming_number": "+905551112233", "state": "offhook"})
         self.assertEqual(self.api.current_or_session_id("current"), session["id"])
         self.assertEqual(self.api.current_or_session_id(session["id"]), session["id"])
+
+    def test_normalize_patch_config_sip_fields(self):
+        patch = self.api.normalize_patch_config(
+            {
+                "telephony_backend": "sip",
+                "sip_server": "sip.example.com",
+                "sip_username": "1001",
+                "sip_password": "secret",
+                "sip_port": "5070",
+                "sip_transport": "TCP",
+            }
+        )
+        self.assertEqual(patch["telephony_backend"], "sip")
+        self.assertEqual(patch["sip_server"], "sip.example.com")
+        self.assertEqual(patch["sip_username"], "1001")
+        self.assertEqual(patch["sip_password"], "secret")
+        self.assertEqual(patch["sip_port"], 5070)
+        self.assertEqual(patch["sip_transport"], "tcp")
 
 
 if __name__ == "__main__":
