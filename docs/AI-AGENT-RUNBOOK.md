@@ -1,144 +1,137 @@
 # AI agent runbook
 
-CallScoot now ships with an optional `callscoot-agent` helper.
+The default production path is now the **ElevenAgents runtime**.
 
-It is responsible for:
+CallScoot runs as two local services:
 
-- reading phone-call audio from `callscoot.agent.rx.monitor`
-- transcribing caller speech
-- generating an LLM reply
-- synthesizing the reply back to audio
-- playing that reply into `callscoot.agent.tx`
-- writing transcript + summary files into the call session directory
+- `callscoot-agent.service` -> real-time agent runtime
+- `callscoot-api.service` -> local control API for external apps
 
-## Supported providers
+## Runtime responsibilities
 
-### STT
+The agent runtime is responsible for:
 
-- `mock`
-- `openai`
-- `whisper_cli`
+- reading call audio from `callscoot.agent.rx.monitor`
+- sending audio to ElevenAgents over WebSocket
+- receiving generated agent audio and playing it into `callscoot.agent.tx`
+- persisting transcripts, summaries, and structured events per call
+- reconnecting the audio / websocket path when possible
 
-### LLM
-
-- `mock`
-- `openai`
-- `ollama`
-
-### TTS
-
-- `mock`
-- `openai`
-- `espeak`
-
-That means you can mix providers, for example:
-
-- OpenAI STT + OpenAI LLM + OpenAI TTS
-- OpenAI STT + Ollama LLM + espeak TTS
-- whisper.cpp STT + Ollama LLM + espeak TTS
-- mock/mock/mock for local smoke tests
-
-## 1) Create the virtual devices
+## Services
 
 ```bash
-callscoot-agent bootstrap-audio
-systemctl --user restart callscoot-daemon.service
+systemctl --user status callscoot-daemon.service
+systemctl --user status callscoot-agent.service
+systemctl --user status callscoot-api.service
 ```
 
-This creates:
+## Environment
+
+Agent runtime configuration is loaded from:
+
+```text
+~/.config/callscoot/elevenagents.env
+```
+
+Expected values:
+
+```env
+ELEVENLABS_API_KEY=...
+ELEVENLABS_AGENT_ID=...
+# optional:
+# ELEVENLABS_WEBHOOK_SECRET=...
+# CALLSCOOT_API_HOST=127.0.0.1
+# CALLSCOOT_API_PORT=8788
+# CALLSCOOT_API_TOKEN=
+```
+
+## Audio devices
+
+CallScoot uses these virtual devices for the agent path:
 
 - `callscoot.agent.rx`
 - `callscoot.agent.rx.monitor`
 - `callscoot.agent.tx`
 - `callscoot.agent.tx.monitor`
 
-and points CallScoot at them.
+## What to check first
 
-## 2) Configure the provider stack
-
-### Fully local-ish example
+### 1) Services
 
 ```bash
-callscoot-agent configure \
-  --stt-provider whisper_cli \
-  --whisper-command whisper-cli \
-  --whisper-model-path /path/to/ggml-base.bin \
-  --llm-provider ollama \
-  --llm-model llama3.1:8b \
-  --tts-provider espeak
+systemctl --user status callscoot-daemon.service
+systemctl --user status callscoot-agent.service
+systemctl --user status callscoot-api.service
 ```
 
-### OpenAI example
+### 2) Logs
 
 ```bash
-export OPENAI_API_KEY=...
-
-callscoot-agent configure \
-  --stt-provider openai \
-  --stt-model whisper-1 \
-  --llm-provider openai \
-  --llm-model gpt-4o-mini \
-  --tts-provider openai \
-  --tts-model gpt-4o-mini-tts \
-  --tts-voice alloy
+journalctl --user -u callscoot-agent.service -f
+journalctl --user -u callscoot-daemon.service -f
+journalctl --user -u callscoot-api.service -f
 ```
 
-## 3) Test the pipeline without a real phone call
+### 3) API health
 
 ```bash
-callscoot-agent reply "Merhaba, bugün saat kaç?"
+curl http://127.0.0.1:8788/v1/health
+curl http://127.0.0.1:8788/v1/status
 ```
 
-That exercises the configured LLM/TTS stack once and returns JSON.
+## Outbound call test
 
-## 4) Run the continuous agent
+Queue a call with injected context:
 
 ```bash
-callscoot-agent run
+curl -X POST http://127.0.0.1:8788/v1/outbound-calls \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "number": "+905551112233",
+    "dynamic_variables": {
+      "campaign_name": "smoke_test",
+      "contact_name": "Efe"
+    },
+    "metadata": {
+      "row_id": "1"
+    }
+  }'
 ```
 
-What it does:
+Then watch live agent events:
 
-1. waits for an active call session from `callscoot-daemon`
-2. starts recording from `callscoot.agent.rx.monitor`
-3. runs a simple energy-based VAD
-4. transcribes completed utterances
-5. asks the LLM for a short reply
-6. synthesizes that reply
-7. plays it into `callscoot.agent.tx`
-8. writes transcript + summary files to the session directory
+```bash
+curl -N 'http://127.0.0.1:8788/v1/events/stream?session_id=current'
+```
 
-## Optional systemd service
+## After the call
 
-The repo also installs:
+Session artifacts are stored under:
 
 ```text
-~/.config/systemd/user/callscoot-agent.service
+~/.local/state/callscoot/calls/<session-id>/
 ```
 
-Enable it if you want the AI loop to always be available:
+Typical files:
+
+- `meta.json`
+- `events.jsonl`
+- `transcript.jsonl`
+- `agent_events.jsonl`
+- `summary.txt`
+
+## External app usage
+
+If another app needs to drive CallScoot, it should use the local API rather than shelling out to Bluetooth or PipeWire tools.
+
+See [`API.md`](API.md) and [`../examples/lead_campaign_app.py`](../examples/lead_campaign_app.py).
+
+## Legacy mode
+
+`callscoot-agent run --mode classic` still exists for the older local STT -> LLM -> TTS pipeline.
+
+The production recommendation is:
 
 ```bash
-systemctl --user enable --now callscoot-agent.service
+callscoot-agent run --mode elevenagents
 ```
-
-## Transcript output
-
-Transcripts are appended to:
-
-```text
-~/.local/state/callscoot/calls/<session-id>/transcript.jsonl
-```
-
-Summaries are written to:
-
-```text
-~/.local/state/callscoot/calls/<session-id>/summary.txt
-```
-
-## Notes
-
-- `mock` providers are useful for smoke tests
-- `espeak` requires `espeak-ng`
-- `whisper_cli` expects a working whisper.cpp/whisper-cli installation and model path
-- for a pure AI path, keep CallScoot echo cancellation off on the virtual sinks

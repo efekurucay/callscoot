@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Bluetooth-HFP%20%7C%20HSP-0082FC?logo=bluetooth&logoColor=white" alt="Bluetooth HFP/HSP"/>
   <img src="https://img.shields.io/badge/Audio-PipeWire-red?logo=linux&logoColor=white" alt="PipeWire"/>
   <img src="https://img.shields.io/badge/ADB-Optional-green?logo=android&logoColor=white" alt="ADB Optional"/>
-  <img src="https://img.shields.io/badge/AI%20Agent-OpenAI%20%7C%20Ollama-blueviolet?logo=openai&logoColor=white" alt="AI Agent"/>
+  <img src="https://img.shields.io/badge/Voice%20Agent-ElevenAgents-blueviolet" alt="Voice Agent"/>
   <img src="https://img.shields.io/badge/Headless-Systemd%20Service-lightgrey?logo=systemd&logoColor=white" alt="Systemd Service"/>
 </p>
 
@@ -25,7 +25,8 @@ CallScoot makes the laptop behave like a local call console:
 - optional **echo cancellation** is enabled by default
 - optional **ADB helpers** can dial / answer / hang up calls
 - optional **call policies** can auto-answer / auto-reject incoming calls
-- optional **AI agent mode** can run STT -> LLM -> TTS inside the call
+- optional **real-time voice agent mode** can run inside the call
+- local HTTP API makes it easy for another app to use CallScoot as a call runtime
 - runs as a **headless user service** on an always-on Linux box
 
 This project is Linux-first and tested against:
@@ -43,6 +44,7 @@ See also:
 - [`docs/AI-VOICE-ROUTING.md`](docs/AI-VOICE-ROUTING.md)
 - [`docs/AI-AGENT-RUNBOOK.md`](docs/AI-AGENT-RUNBOOK.md)
 - [`docs/API.md`](docs/API.md)
+- [`examples/lead_campaign_app.py`](examples/lead_campaign_app.py)
 
 ---
 

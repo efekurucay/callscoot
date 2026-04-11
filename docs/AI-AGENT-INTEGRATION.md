@@ -1,141 +1,80 @@
 # AI agent integration
 
-This is the shortest practical way to connect an AI agent to CallScoot.
+CallScoot should be treated as a **local call runtime**.
 
-## Mental model
+Do not make your app talk to PipeWire, BlueZ, or Bluetooth directly.
+Use the local CallScoot API instead.
 
-Treat CallScoot as a **CLI backend**.
+See:
 
-Your agent should not talk to PipeWire or BlueZ directly for control.
-Instead, the agent should run `callscoot` commands and read the output.
-
-For the **actual audio stream** case — receiving live call audio in the computer, running STT/LLM/TTS, and sending generated speech back into the call — see:
-
-- [`AI-VOICE-ROUTING.md`](AI-VOICE-ROUTING.md)
+- [`API.md`](API.md)
 - [`AI-AGENT-RUNBOOK.md`](AI-AGENT-RUNBOOK.md)
+- [`AI-VOICE-ROUTING.md`](AI-VOICE-ROUTING.md)
 
 ## Recommended integration shape
 
-Expose these commands as agent tools:
+Your application is responsible for:
 
-| Tool name | Command |
-|---|---|
-| `callscoot_status` | `callscoot status` |
-| `callscoot_up` | `callscoot up` |
-| `callscoot_down` | `callscoot down` |
-| `callscoot_dial` | `callscoot dial <NUMBER>` |
-| `callscoot_answer` | `callscoot answer` |
-| `callscoot_hangup` | `callscoot hangup` |
-| `callscoot_logs` | `callscoot logs -n 100` |
+- lead lists
+- campaign logic
+- CRM writes
+- retries
+- business rules
 
-If you want device-specific control, also expose:
+CallScoot is responsible for:
 
-| Tool name | Command |
-|---|---|
-| `callscoot_devices` | `callscoot devices` |
-| `callscoot_configure_device` | `callscoot configure --device <MAC>` |
+- Bluetooth call audio routing
+- ElevenAgents session lifecycle
+- transcripts, summaries, and structured event files
+- local call/session control
 
-## One-time human setup
+## Preferred control path
 
-Before an agent can use CallScoot reliably, do this once:
-
-1. install CallScoot
-2. pair the Android phone with `callscoot pair`
-3. allow **call audio** for the laptop on Android
-4. optionally pin the phone:
-
-```bash
-callscoot configure --device AA:BB:CC:DD:EE:FF
-```
-
-After that, the agent normally only needs `status`, `up/down`, and optional ADB helpers.
-
-## What the agent should do at runtime
-
-### To check whether the system is ready
-
-Run:
-
-```bash
-callscoot status
-```
-
-Useful fields in the JSON output:
-
-- `service_active`
-- `bluez_pairs`
-- `bluez_cards`
-- `default_sink`
-- `default_source`
-- `adb_devices`
-- `adb_call_state`
-
-### To force the bridge now
-
-```bash
-callscoot up
-```
-
-### To remove the bridge
-
-```bash
-callscoot down
-```
-
-### To place or control a call
-
-```bash
-callscoot dial +905551112233
-callscoot answer
-callscoot hangup
-```
-
-Note: `dial/answer/hangup` use ADB if available. Call audio still uses Bluetooth HFP/HSP. If you want the daemon to answer ringing calls automatically, configure `callscoot configure --auto-answer on`.
-
-## Minimal agent policy
-
-A simple policy is enough:
-
-- use `callscoot status` first
-- if no Bluetooth call-audio route is present in `bluez_pairs`, do not pretend the bridge is active
-- use `callscoot up` only when a phone route exists
-- use `callscoot dial` only when the user explicitly asked to call a number
-- use `callscoot logs` when diagnosis is needed
-
-## Example wrapper
-
-If your agent framework supports shell tools, a minimal wrapper is enough:
-
-```bash
-callscoot status
-callscoot up
-callscoot down
-callscoot dial +905551112233
-callscoot answer
-callscoot hangup
-callscoot calls
-callscoot-agent reply "Merhaba"
-```
-
-## Recommended architecture
+Use the local HTTP API:
 
 ```text
-AI agent
-   -> shell/tool call
-   -> callscoot CLI
-   -> BlueZ / PipeWire / ADB
+POST /v1/outbound-calls
+GET  /v1/current-call
+GET  /v1/calls
+GET  /v1/calls/<session-id>
+GET  /v1/events/stream?session_id=current
+POST /v1/current-call/contextual-update
+POST /v1/current-call/user-message
+POST /v1/current-call/hangup
 ```
 
-That is the intended integration model.
+## Typical architecture
 
-## Do not overcomplicate it
+```text
+Your app
+   -> CallScoot local HTTP API
+   -> CallScoot agent runtime
+   -> ElevenAgents
+   -> Bluetooth phone call
+```
 
-For a single-phone setup, the best approach is:
+## Example use cases
 
-- keep `callscoot-daemon.service` running
-- let the agent call the CLI only when needed
-- use `status` as the source of truth
+- lead qualification campaign
+- appointment confirmation
+- renewal reminder calls
+- customer survey calls
+- outbound concierge assistant
 
-If you need one sentence:
+## Minimal control loop
 
-> To integrate an AI agent with CallScoot, expose the `callscoot` CLI as agent tools and let the agent control the phone/audio bridge only through those commands.
+1. queue a call with `POST /v1/outbound-calls`
+2. inject campaign data through `dynamic_variables`
+3. watch `GET /v1/events/stream?session_id=current`
+4. fetch final call data from `GET /v1/calls/<session-id>`
+5. write results to your own database / CRM / spreadsheet
+
+## Example app
+
+A minimal sequential lead-calling app is included here:
+
+```text
+examples/lead_campaign_app.py
+```
+
+That script reads a CSV file, places calls one by one, and writes results back into the file.

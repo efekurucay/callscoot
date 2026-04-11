@@ -163,35 +163,41 @@ curl -X POST http://127.0.0.1:8788/v1/current-call/hangup
 
 ## Example integration from another Python app
 
+A complete sequential lead-calling example is included here:
+
+```text
+examples/lead_campaign_app.py
+examples/leads.csv.example
+```
+
+It reads a CSV lead list, queues calls one by one, waits for completion, and writes results back into the same CSV.
+
+### Minimal Python snippet
+
 ```python
-import requests
+import json
+import urllib.request
 
 API = "http://127.0.0.1:8788"
 
-resp = requests.post(
-    f"{API}/v1/outbound-calls",
-    json={
-        "number": "+905551112233",
-        "dynamic_variables": {
-            "campaign_name": "survey",
-            "contact_name": "Efe",
-        },
-        "metadata": {
-            "row_id": "42",
-        },
+payload = {
+    "number": "+905551112233",
+    "dynamic_variables": {
+        "campaign_name": "survey",
+        "contact_name": "Efe",
     },
-    timeout=10,
+    "metadata": {
+        "row_id": "42",
+    },
+}
+req = urllib.request.Request(
+    f"{API}/v1/outbound-calls",
+    data=json.dumps(payload).encode("utf-8"),
+    method="POST",
+    headers={"Content-Type": "application/json"},
 )
-resp.raise_for_status()
-request_info = resp.json()
-print(request_info)
-
-stream = requests.get(f"{API}/v1/events/stream?session_id=current", stream=True, timeout=120)
-for line in stream.iter_lines():
-    if not line:
-        continue
-    if line.startswith(b"data: "):
-        print(line[6:].decode())
+with urllib.request.urlopen(req, timeout=10) as resp:
+    print(resp.read().decode())
 ```
 
 ## Authentication
