@@ -113,6 +113,7 @@ callscoot call-show 20260410-223344-+905314584141
 callscoot configure \
   --auto-answer on \
   --auto-answer-delay 2 \
+  --max-call-duration 600 \
   --policy-mode allow_all \
   --auto-select-device on \
   --log-calls on

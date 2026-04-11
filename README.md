@@ -349,6 +349,7 @@ callscoot configure --source alsa_input.pci-0000_00_1f.3.analog-stereo
 callscoot configure --adb-serial 192.168.1.50:5555
 callscoot configure --auto-answer on
 callscoot configure --auto-answer-delay 2
+callscoot configure --max-call-duration 600
 callscoot configure --auto-select-device on
 callscoot configure --policy-mode allowlist --allow-caller +905551112233 --unknown-callers deny --auto-reject on
 callscoot configure --business-hours 09:00-18:00 --business-days mon,tue,wed,thu,fri
@@ -380,6 +381,14 @@ You can also delay auto-answer slightly so Bluetooth audio has time to settle:
 callscoot configure --auto-answer-delay 2
 ```
 
+If you want long calls to be cut off automatically, set a maximum call duration in seconds:
+
+```bash
+callscoot configure --max-call-duration 600
+```
+
+Use `0` to disable the limit.
+
 And you can apply call policies:
 
 ```bash
@@ -400,6 +409,7 @@ callscoot configure \
   --auto-select-device on \
   --auto-answer on \
   --auto-answer-delay 2 \
+  --max-call-duration 600 \
   --policy-mode allow_all \
   --log-calls on
 systemctl --user restart callscoot-daemon.service

@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
     "discoverable_timeout": 180,
     "auto_answer": False,
     "auto_answer_delay_sec": 2,
+    "max_call_duration_sec": 0,
     "auto_select_device": True,
     "device_bindings": {},
     "call_policy_mode": "allow_all",
@@ -181,6 +182,7 @@ def create_call_session(call_info: dict[str, Any], extra: dict[str, Any] | None 
         "adb_serial": call_info.get("adb_serial"),
         "target_mac": call_info.get("target_mac"),
         "target_name": call_info.get("target_name"),
+        "offhook_started_at": None,
         "policy_action": None,
         "policy_reason": None,
         "summary": None,
@@ -1084,6 +1086,9 @@ def configure_cmd(args: argparse.Namespace) -> None:
     if args.auto_answer_delay is not None:
         cfg["auto_answer_delay_sec"] = max(0, int(args.auto_answer_delay))
         changed = True
+    if args.max_call_duration is not None:
+        cfg["max_call_duration_sec"] = max(0, int(args.max_call_duration))
+        changed = True
     if args.auto_select_device is not None:
         cfg["auto_select_device"] = args.auto_select_device == "on"
         changed = True
@@ -1384,6 +1389,7 @@ def daemon_cmd(args: argparse.Namespace) -> None:
     ring_started_at: float | None = None
     ring_action_taken = False
     ring_policy_logged = False
+    max_duration_action_taken = False
 
     def handle_signal(signum, _frame):
         global STOP
@@ -1406,6 +1412,8 @@ def daemon_cmd(args: argparse.Namespace) -> None:
             local_sink_override = args.sink or cfg.get("local_sink")
             auto_answer = cfg.get("auto_answer", False) if getattr(args, "auto_answer", None) is None else args.auto_answer == "on"
             auto_answer_delay = max(0, int(getattr(args, "auto_answer_delay", None) or cfg.get("auto_answer_delay_sec") or 0))
+            max_call_duration_override = getattr(args, "max_call_duration", None)
+            max_call_duration_sec = max(0, int(cfg.get("max_call_duration_sec") or 0)) if max_call_duration_override is None else max(0, int(max_call_duration_override))
             log_calls = bool(cfg.get("log_calls", True))
 
             call_info = {"state": None, "incoming_number": None, "direction": None, "adb_serial": selected_adb_serial}
@@ -1436,11 +1444,22 @@ def daemon_cmd(args: argparse.Namespace) -> None:
                     ring_started_at = time.time()
                     ring_action_taken = False
                     ring_policy_logged = False
+                    max_duration_action_taken = False
                     log("incoming call detected")
+                elif call_state == "offhook":
+                    ring_started_at = None
+                    ring_action_taken = False
+                    ring_policy_logged = False
+                    max_duration_action_taken = False
+                    if current_session and not current_session.get("offhook_started_at"):
+                        offhook_started_at = utc_now_iso()
+                        update_call_session(current_session["id"], offhook_started_at=offhook_started_at)
+                        current_session = load_current_call() or current_session
                 else:
                     ring_started_at = None
                     ring_action_taken = False
                     ring_policy_logged = False
+                    max_duration_action_taken = False
                 if last_call_state in {"ringing", "offhook"} and call_state == "idle" and current_session:
                     finalize_call_session(
                         current_session["id"],
@@ -1454,6 +1473,24 @@ def daemon_cmd(args: argparse.Namespace) -> None:
                 last_call_state = call_state
             elif log_calls and call_state in {"ringing", "offhook"} and not current_session:
                 current_session = create_call_session(call_info, extra={"policy": caller_lists_snapshot(cfg)})
+
+            if current_session and call_state == "offhook" and selected_adb_serial and max_call_duration_sec > 0 and not max_duration_action_taken:
+                offhook_started_at = current_session.get("offhook_started_at") or current_session.get("started_at")
+                if offhook_started_at:
+                    try:
+                        started_ts = datetime.fromisoformat(str(offhook_started_at).replace("Z", "+00:00")).timestamp()
+                    except ValueError:
+                        started_ts = 0
+                    if started_ts and (time.time() - started_ts) >= max_call_duration_sec:
+                        log(f"max call duration reached ({max_call_duration_sec}s), hanging up")
+                        append_call_event(
+                            current_session["id"],
+                            "max_call_duration_reached",
+                            limit_sec=max_call_duration_sec,
+                            offhook_started_at=offhook_started_at,
+                        )
+                        adb_cmd(["shell", "input", "keyevent", "KEYCODE_ENDCALL"], None, cfg, target_mac=target_mac)
+                        max_duration_action_taken = True
 
             if auto_answer and call_state == "ringing" and selected_adb_serial:
                 decision = evaluate_call_policy(cfg, call_info)
@@ -1601,6 +1638,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--clear-adb-serial", action="store_true")
     p.add_argument("--auto-answer", choices=["on", "off"])
     p.add_argument("--auto-answer-delay", type=int)
+    p.add_argument("--max-call-duration", type=int)
     p.add_argument("--auto-select-device", choices=["on", "off"])
     p.add_argument("--policy-mode", choices=["allow_all", "allowlist", "blocklist"])
     p.add_argument("--allow-caller", action="append")
@@ -1637,6 +1675,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--latency", type=int)
     p.add_argument("--auto-answer", choices=["on", "off"])
     p.add_argument("--auto-answer-delay", type=int)
+    p.add_argument("--max-call-duration", type=int)
     p.set_defaults(func=daemon_cmd)
 
     p = sub.add_parser("logs", help="show daemon logs")
