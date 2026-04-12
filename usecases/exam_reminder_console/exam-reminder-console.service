@@ -1,0 +1,15 @@
+[Unit]
+Description=Exam Reminder Console (CallScoot use-case app)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/callscoot
+ExecStart=/usr/bin/python3 %h/callscoot/usecases/exam_reminder_console/app.py
+Environment=EXAM_REMINDER_HOST=0.0.0.0
+Environment=EXAM_REMINDER_PORT=8899
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

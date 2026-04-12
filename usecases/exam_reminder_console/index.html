@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Exam Reminder Console</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header class="page-header compact-header">
+      <div>
+        <h1>Exam Reminder Console</h1>
+        <p>Daha sade operasyon ekranı: listeyi yönet, tek tek ara, sonucu izle.</p>
+      </div>
+      <div class="header-actions compact-actions">
+        <button id="refreshBtn">Yenile</button>
+        <button id="startCampaignBtn" class="success">Toplu kampanyayı başlat</button>
+        <button id="stopCampaignBtn" class="danger">Durdur</button>
+        <button id="hangupCallBtn" class="danger">Aktif çağrıyı kapat</button>
+        <a class="button-link" href="/api/export.csv">CSV indir</a>
+      </div>
+    </header>
+
+    <main class="simple-layout">
+      <section class="card">
+        <h2>Canlı durum</h2>
+        <div id="runnerStatus" class="status-grid compact-grid"></div>
+        <div id="accessUrls" class="badge-row"></div>
+        <div id="countsBar" class="badge-row"></div>
+      </section>
+
+      <section class="card two-up-card">
+        <div>
+          <h2>Tek kayıt ekle</h2>
+          <form id="studentForm" class="stack-form">
+            <label>Ad Soyad <input name="full_name" required /></label>
+            <label>Telefon <input name="phone" required /></label>
+            <label>Sınav tarih/saat <input name="exam_datetime" placeholder="2026-05-01 09:30" required /></label>
+            <label>Sınav yeri / salon <input name="exam_location" placeholder="Ana bina / Salon 3" /></label>
+            <label>Sınav seansı <input name="exam_session" placeholder="09:30 Sabah Oturumu" /></label>
+            <button type="submit">Kaydet</button>
+          </form>
+        </div>
+        <div>
+          <h2>Toplu içe aktar</h2>
+          <p class="muted">CSV başlığı: <code>full_name,phone,exam_datetime,exam_location,exam_session</code></p>
+          <input id="csvFileInput" type="file" accept=".csv,.txt" />
+          <form id="importForm" class="stack-form import-box">
+            <label>CSV içerik
+              <textarea id="csvText" name="csv_text" rows="8" placeholder="full_name,phone,exam_datetime,exam_location,exam_session&#10;Ayşe Yılmaz,+905551112233,2026-05-01 09:30,Ana Bina / Salon 3,09:30 Sabah"></textarea>
+            </label>
+            <label class="checkbox-row"><input type="checkbox" name="replace_existing" /> Listeyi sıfırla ve yeniden yükle</label>
+            <button type="submit">İçe aktar</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Öğrenci listesi</h2>
+          <span class="muted">Satırdaki <strong>Şimdi Ara</strong> butonu ile tekil test yapabilirsin.</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Öğrenci</th>
+                <th>Telefon</th>
+                <th>Sınav</th>
+                <th>Durum</th>
+                <th>Sonuç</th>
+                <th>İşlemler</th>
+              </tr>
+            </thead>
+            <tbody id="studentsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card collapsible-card">
+        <details open>
+          <summary>Prompt önizleme</summary>
+          <p class="muted">Seçili kaydın agent’e giden bağlamını burada görürsün.</p>
+          <label>Önerilen temel ElevenLabs prompt</label>
+          <pre id="recommendedPrompt" class="code-block"></pre>
+          <label>Seçili kayıt için gönderilecek içerik</label>
+          <pre id="promptPreview" class="code-block">Önizleme için tablodan bir kayıt seçin.</pre>
+        </details>
+      </section>
+
+      <section class="card collapsible-card">
+        <details>
+          <summary>Basit ayarlar</summary>
+          <form id="settingsForm" class="stack-form simple-settings">
+            <label>CallScoot API base URL <input name="callscoot_api_base" /></label>
+            <label>Arama modu
+              <select name="telephony_backend" id="telephonyBackendSelect">
+                <option value="adb">Şimdiki mod (ADB / telefon)</option>
+                <option value="sip">SIP</option>
+                <option value="auto">Otomatik</option>
+              </select>
+            </label>
+            <div id="sipFieldsBlock">
+              <label>SIP server address <input name="sip_server" placeholder="sip.example.com" /></label>
+              <label>SIP username <input name="sip_username" /></label>
+              <label>SIP password <input name="sip_password" type="password" autocomplete="off" /></label>
+              <label>SIP port <input name="sip_port" type="number" min="1" /></label>
+              <label>SIP transport
+                <select name="sip_transport">
+                  <option value="udp">UDP</option>
+                  <option value="tcp">TCP</option>
+                  <option value="tls">TLS</option>
+                </select>
+              </label>
+              <label>SIP ses modu
+                <select name="sip_audio_mode">
+                  <option value="agent">Agent</option>
+                  <option value="direct">Direct</option>
+                </select>
+              </label>
+            </div>
+            <div class="inline-actions">
+              <button type="button" id="applyRuntimeBtn">Seçili modu CallScoot'a uygula</button>
+            </div>
+            <label>Kurum adı <input name="organization_name" /></label>
+            <label>Arayan adı <input name="caller_name" /></label>
+            <label>Açılış cümlesi <textarea name="greeting_template" rows="2"></textarea></label>
+            <label>Bilgilendirme cümlesi <textarea name="briefing_template" rows="2"></textarea></label>
+            <label>Katılım sorusu <textarea name="attendance_question_template" rows="2"></textarea></label>
+            <label>Fallback cümlesi <textarea name="fallback_phrase" rows="2"></textarea></label>
+            <label>SSS / bilgi bankası <textarea name="faq_text" rows="6"></textarea></label>
+            <label>Açılış konuşmasını zorla <select name="auto_send_opening_user_message"><option value="true">Evet</option><option value="false">Hayır</option></select></label>
+            <label>Açılış gecikmesi (sn) <input name="opening_message_delay_sec" type="number" min="0" /></label>
+            <label>Açılışı tetikleyen user_message şablonu <textarea name="opening_instruction_template" rows="4"></textarea></label>
+            <div class="inline-actions">
+              <button type="submit">Ayarları kaydet</button>
+            </div>
+
+            <details>
+              <summary>Gelişmiş ayarlar</summary>
+              <div class="stack-form nested-settings">
+                <label>Uygulama başlığı <input name="app_title" /></label>
+                <label>CallScoot API token <input name="callscoot_api_token" /></label>
+                <label>Kampanya adı <input name="campaign_name" /></label>
+                <label>Arayan rolü <input name="caller_role" /></label>
+                <label>Kapanış cümlesi <textarea name="closing_template" rows="2"></textarea></label>
+                <label>Ek kurallar <textarea name="additional_rules" rows="3"></textarea></label>
+                <label>Contextual update otomatik gönder <select name="auto_send_contextual_update"><option value="true">Evet</option><option value="false">Hayır</option></select></label>
+                <label>Ulaşılamazsa tekrar dene <select name="retry_unreached"><option value="true">Evet</option><option value="false">Hayır</option></select></label>
+                <label>Maks. deneme <input name="max_attempts" type="number" min="1" /></label>
+                <label>Tekrar deneme dakikası <input name="retry_delay_minutes" type="number" min="0" /></label>
+                <label>Aramalar arası saniye <input name="delay_between_calls_sec" type="number" min="0" /></label>
+                <label>Session başlama timeout (sn) <input name="wait_for_session_start_sec" type="number" min="5" /></label>
+                <label>Session bitiş timeout (sn) <input name="wait_for_session_end_sec" type="number" min="30" /></label>
+                <label>CallScoot patch otomatik uygula <select name="auto_apply_callscoot_patch"><option value="false">Hayır</option><option value="true">Evet</option></select></label>
+                <label>CallScoot config patch (JSON) <textarea name="callscoot_patch_payload" rows="7"></textarea></label>
+                <div class="inline-actions">
+                  <button type="button" id="applyPatchBtn">Patch'i CallScoot'a uygula</button>
+                </div>
+              </div>
+            </details>
+          </form>
+        </details>
+      </section>
+
+      <section class="card collapsible-card">
+        <details>
+          <summary>CallScoot runtime durumu</summary>
+          <div class="inline-actions compact-actions">
+            <button id="fetchCallScootBtn">Durumu çek</button>
+          </div>
+          <pre id="callscootStatus" class="code-block">Henüz çekilmedi.</pre>
+        </details>
+      </section>
+
+      <section class="card collapsible-card">
+        <details>
+          <summary>Son arama denemeleri</summary>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Öğrenci</th>
+                  <th>Deneme</th>
+                  <th>Session</th>
+                  <th>Sonuç</th>
+                  <th>Hata</th>
+                  <th>Zaman</th>
+                </tr>
+              </thead>
+              <tbody id="attemptsBody"></tbody>
+            </table>
+          </div>
+        </details>
+      </section>
+    </main>
+
+    <div id="toast"></div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

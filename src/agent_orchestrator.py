@@ -8,6 +8,7 @@ import os
 import queue
 import signal
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
 RX_SOURCE = "callscoot.agent.rx.monitor"
 TX_SINK = "callscoot.agent.tx"
 ENV_PATHS = [Path.cwd() / ".env", callscoot.CONFIG_DIR / "elevenlabs.env", callscoot.CONFIG_DIR / "elevenagents.env"]
+OUTBOUND_CONNECT_GRACE_SEC = float(os.environ.get("CALLSCOOT_OUTBOUND_CONNECT_GRACE_SEC", "0"))
 
 
 class ElevenAgentsError(RuntimeError):
@@ -151,6 +153,43 @@ def build_dynamic_variables(call_info: dict[str, Any], memory: MemoryStore, requ
     if request_context:
         variables.update(request_context.get("dynamic_variables") or {})
     return {key: value for key, value in variables.items() if value is not None}
+
+
+def _iso_to_ts(value: Any) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def request_context_suggests_outbound(request_context: dict[str, Any] | None) -> bool:
+    if not request_context:
+        return False
+    metadata = request_context.get("metadata") or {}
+    if request_context.get("target_number"):
+        return True
+    if metadata.get("fallback_unmatched"):
+        return True
+    if metadata.get("workflow"):
+        return True
+    return False
+
+
+def should_start_agent_for_call(call_info: dict[str, Any], current: dict[str, Any] | None, request_context: dict[str, Any] | None = None) -> bool:
+    if str(call_info.get("state") or "") != "offhook":
+        return False
+    direction = str(call_info.get("direction") or "").lower()
+    outbound_hint = direction == "outgoing" or request_context_suggests_outbound(request_context)
+    if not outbound_hint:
+        return True
+    offhook_ts = _iso_to_ts((current or {}).get("offhook_started_at")) or _iso_to_ts((current or {}).get("started_at"))
+    if offhook_ts is None:
+        return False
+    elapsed = datetime.now(timezone.utc).timestamp() - offhook_ts
+    return elapsed >= OUTBOUND_CONNECT_GRACE_SEC
 
 
 def build_simple_summary(session_id: str) -> str:
@@ -475,13 +514,19 @@ def run_forever() -> None:
             route_active = bool(pair)
 
             if call_state == "offhook" and route_active and active_session_id:
+                request_context = (current or {}).get("client_request") if current else None
+                if not request_context:
+                    request_context = claim_pending_call_request(call_info, active_session_id)
+                    if request_context:
+                        callscoot.update_call_session(active_session_id, client_request=request_context)
+                        current = callscoot.load_current_call() or current
+                if not should_start_agent_for_call(call_info, current, request_context):
+                    stop_main.wait(0.1)
+                    continue
                 if current_session_id != active_session_id or bridge is None:
                     if bridge and current_session_id:
                         bridge.stop()
                     current_session_id = active_session_id
-                    request_context = claim_pending_call_request(call_info, active_session_id)
-                    if request_context:
-                        callscoot.update_call_session(active_session_id, client_request=request_context)
                     bridge = ElevenAgentsCallBridge(active_session_id, call_info, agent_id, api_key, memory, request_context=request_context)
                     bridge.start()
                 if bridge:

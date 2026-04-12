@@ -1,0 +1,2 @@
+# No extra dependencies.
+# This app uses only the Python standard library and CallScoot's local HTTP API.
